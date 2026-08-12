@@ -81,6 +81,10 @@ jobs:
       # against a real server over real TLS, not only in Go tests.
       - run: ./scripts/verify-p1.sh
 
+      # P2 needs two subnets and a router between them, which is why this one
+      # runs in Docker rather than against loopback.
+      - run: ./scripts/verify-p2.sh
+
   licence:
     name: licence headers
     runs-on: ubuntu-latest

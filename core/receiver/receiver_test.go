@@ -46,6 +46,7 @@ const testToken = "test-device-token"
 
 type harness struct {
 	*httptest.Server
+	srv   *receiver.Server
 	db    *store.DB
 	files *storage.Store
 	root  string
@@ -86,7 +87,7 @@ func newHarness(t *testing.T) *harness {
 		t.Fatal(err)
 	}
 
-	h := &harness{Server: httptest.NewServer(srv.Handler()), db: db, files: files, root: root, t: t}
+	h := &harness{Server: httptest.NewServer(srv.Handler()), srv: srv, db: db, files: files, root: root, t: t}
 	t.Cleanup(h.Close)
 
 	h.addDevice("dev-1", "An's iPhone", testToken)

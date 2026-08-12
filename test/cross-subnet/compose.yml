@@ -1,0 +1,65 @@
+# Copyright 2026 Geda
+# SPDX-License-Identifier: Apache-2.0
+#
+# Two subnets joined by a router, which is the topology the P2 gate is about.
+#
+# The router forwards unicast IP and nothing else. Broadcast stops at its
+# subnet, and mDNS is multicast with TTL=1 so it never leaves either segment --
+# exactly like a real router, and exactly like a WireGuard tunnel, which has no
+# broadcast domain at all. What is left is the unicast sweep and the candidate
+# set, which is what this gate exists to prove.
+
+name: geda-p2-gate
+
+networks:
+  subnet-a:
+    ipam:
+      config:
+        - subnet: 192.168.11.0/24
+  subnet-b:
+    ipam:
+      config:
+        - subnet: 192.168.12.0/24
+
+services:
+  router:
+    image: alpine:3.21
+    cap_add: [NET_ADMIN]
+    sysctls:
+      net.ipv4.ip_forward: 1
+    networks:
+      subnet-a:
+        ipv4_address: 192.168.11.2
+      subnet-b:
+        ipv4_address: 192.168.12.2
+    command: ["sleep", "infinity"]
+
+  peer-a:
+    build:
+      context: ../..
+      dockerfile: test/cross-subnet/Dockerfile
+    depends_on: [router]
+    cap_add: [NET_ADMIN]
+    networks:
+      subnet-a:
+        ipv4_address: 192.168.11.20
+    command:
+      - |
+        ip route replace 192.168.12.0/24 via 192.168.11.2
+        exec gatepeer -dir /state -id peer-a -name "Peer A" \
+          -sweep 192.168.12.0/24 -expect peer-b -scan 3s
+
+  peer-b:
+    build:
+      context: ../..
+      dockerfile: test/cross-subnet/Dockerfile
+    depends_on: [router]
+    cap_add: [NET_ADMIN]
+    networks:
+      subnet-b:
+        ipv4_address: 192.168.12.30
+    command:
+      - |
+        ip route replace 192.168.11.0/24 via 192.168.12.2
+        exec gatepeer -dir /state -id peer-b -name "Peer B" \
+          -sweep 192.168.11.0/24 -expect peer-a -scan 3s
