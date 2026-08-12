@@ -37,7 +37,10 @@ pass "src/core tests pass"
 # with the iOS platform installed. What can be checked anywhere with a Swift
 # toolchain is worth checking: the pinning code compiles, and -- the part that
 # matters -- it computes the same pin the receiver reports.
-if command -v swiftc >/dev/null; then
+# `swiftc` alone is not enough: the Linux toolchain has it and has no Apple
+# SDK, so the check below would fail on `import CryptoKit` and report a
+# missing platform as a broken pin implementation.
+if command -v swiftc >/dev/null && xcrun --sdk macosx --show-sdk-path >/dev/null 2>&1; then
     echo "==> checking the native module"
     WORK=$(mktemp -d)
     trap 'rm -rf "$WORK"' EXIT
@@ -87,7 +90,7 @@ if command -v swiftc >/dev/null; then
         pass "both sides compute the same SPKI pin: $reported"
     fi
 else
-    echo "  -- no Swift toolchain here; skipping the native checks"
+    echo "  -- no Apple Swift toolchain here; skipping the native checks"
 fi
 
 echo "==> checking the recorded measurement"
