@@ -17,17 +17,45 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 COMPOSE=(docker compose -f test/cross-subnet/compose.yml)
+COMPOSE_FILE=test/cross-subnet/compose.yml
 LOGS=$(mktemp -d)
+
+# RFC 5737 documentation ranges. See the collision check below for why these
+# are not the 192.168.11/12 addresses docs/PLAN.md uses to describe the gate.
+SUBNET_A=198.51.100
+SUBNET_B=203.0.113
 
 cleanup() {
     "${COMPOSE[@]}" down --remove-orphans --volumes >/dev/null 2>&1 || true
     rm -rf "$LOGS"
 }
-trap cleanup EXIT
+# INT and TERM as well as EXIT: a Ctrl-C that left the networks up would leave
+# the host's routing table altered behind it.
+trap cleanup EXIT INT TERM
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 docker info >/dev/null 2>&1 || fail "docker is not running"
+
+# A Docker bridge whose subnet overlaps a network this machine is really on
+# takes over the host's route to it: the LAN, and usually the internet with it,
+# go away for as long as the network exists. That is a bad way to find out
+# about a config typo, so refuse before creating anything.
+host_addrs=$(ifconfig 2>/dev/null | awk '/inet /{print $2}' \
+    || ip -o -4 addr show 2>/dev/null | awk '{split($4,a,"/"); print a[1]}')
+
+for subnet in "$SUBNET_A" "$SUBNET_B"; do
+    grep -q "subnet: $subnet.0/24" "$COMPOSE_FILE" \
+        || fail "$COMPOSE_FILE no longer uses $subnet.0/24; update the collision check in this script to match"
+
+    if printf '%s\n' "$host_addrs" | grep -q "^$subnet\."; then
+        fail "this machine has an address in $subnet.0/24, so creating a Docker network there would cut off its own connectivity. Pick unused subnets in $COMPOSE_FILE and in this script."
+    fi
+done
+
+# A previous run that was killed rather than exiting cleanly leaves the
+# networks behind, which is exactly the state this script must not build on.
+"${COMPOSE[@]}" down --remove-orphans --volumes >/dev/null 2>&1 || true
 
 echo "==> building the test image"
 "${COMPOSE[@]}" build --quiet
@@ -80,9 +108,9 @@ check peer-b peer-a
 echo "==> negative control: mDNS and broadcast alone must NOT cross the router"
 "${COMPOSE[@]}" up -d router peer-b >/dev/null 2>&1
 control=$("${COMPOSE[@]}" run --rm --no-deps peer-a \
-    'ip route replace 192.168.12.0/24 via 192.168.11.2
-     gatepeer -dir /state -id peer-a -name "Peer A" -expect peer-b \
-       -unicast-only=false -scan 3s -wait 12s' 2>&1 || true)
+    "ip route replace $SUBNET_B.0/24 via $SUBNET_A.2
+     gatepeer -dir /state -id peer-a -name 'Peer A' -expect peer-b \
+       -unicast-only=false -scan 3s -wait 12s" 2>&1 || true)
 
 if printf '%s' "$control" | grep -q '"peer":"peer-b"'; then
     fail "peer-b was found without the unicast sweep; the two subnets are not actually separated, so the gate above proves nothing"

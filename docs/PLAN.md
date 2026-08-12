@@ -31,9 +31,14 @@ a repeat upload.
 - L5 QR pairing payload + manual host:port.
 - TOFU SPKI pinning, per-device tokens.
 
-**Gate:** with the desktop on 192.168.11.x and a client on 192.168.12.x over
-WireGuard, discovery succeeds **in both directions** within 3 seconds.
+**Gate:** with the desktop and the client on different subnets, reachable only
+by unicast, discovery succeeds **in both directions** within 3 seconds.
 This is the acceptance test for the original problem — treat it as blocking.
+
+Verified by `scripts/verify-p2.sh`, which routes two Docker subnets through a
+forwarding container. Use addresses reserved for documentation there, never
+home-router ranges like 192.168.11.x: a Docker bridge overlapping the host's
+own LAN takes the route away from it.
 
 ## P3 — CLI + Docker
 - `gedad` headless daemon, config file, systemd unit.

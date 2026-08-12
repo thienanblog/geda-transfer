@@ -8,6 +8,16 @@
 # exactly like a real router, and exactly like a WireGuard tunnel, which has no
 # broadcast domain at all. What is left is the unicast sweep and the candidate
 # set, which is what this gate exists to prove.
+#
+# The addresses are RFC 5737 documentation ranges (TEST-NET-2 and TEST-NET-3),
+# reserved precisely so they never appear on a real network. This is not
+# cosmetic: a Docker bridge that overlaps a subnet the host is actually on
+# steals the host's route to it, and the developer's machine loses its LAN and
+# its internet for as long as the network exists. docs/PLAN.md describes the
+# gate with 192.168.11.x and 192.168.12.x -- do not use those here, they are
+# ordinary home-router ranges and one of them will eventually be somebody's
+# actual network. scripts/verify-p2.sh refuses to run if these overlap the
+# host.
 
 name: geda-p2-gate
 
@@ -15,11 +25,11 @@ networks:
   subnet-a:
     ipam:
       config:
-        - subnet: 192.168.11.0/24
+        - subnet: 198.51.100.0/24
   subnet-b:
     ipam:
       config:
-        - subnet: 192.168.12.0/24
+        - subnet: 203.0.113.0/24
 
 services:
   router:
@@ -29,9 +39,9 @@ services:
       net.ipv4.ip_forward: 1
     networks:
       subnet-a:
-        ipv4_address: 192.168.11.2
+        ipv4_address: 198.51.100.2
       subnet-b:
-        ipv4_address: 192.168.12.2
+        ipv4_address: 203.0.113.2
     command: ["sleep", "infinity"]
 
   peer-a:
@@ -42,12 +52,12 @@ services:
     cap_add: [NET_ADMIN]
     networks:
       subnet-a:
-        ipv4_address: 192.168.11.20
+        ipv4_address: 198.51.100.20
     command:
       - |
-        ip route replace 192.168.12.0/24 via 192.168.11.2
+        ip route replace 203.0.113.0/24 via 198.51.100.2
         exec gatepeer -dir /state -id peer-a -name "Peer A" \
-          -sweep 192.168.12.0/24 -expect peer-b -scan 3s
+          -sweep 203.0.113.0/24 -expect peer-b -scan 3s
 
   peer-b:
     build:
@@ -57,9 +67,9 @@ services:
     cap_add: [NET_ADMIN]
     networks:
       subnet-b:
-        ipv4_address: 192.168.12.30
+        ipv4_address: 203.0.113.30
     command:
       - |
-        ip route replace 192.168.11.0/24 via 192.168.12.2
+        ip route replace 198.51.100.0/24 via 203.0.113.2
         exec gatepeer -dir /state -id peer-b -name "Peer B" \
-          -sweep 192.168.11.0/24 -expect peer-a -scan 3s
+          -sweep 198.51.100.0/24 -expect peer-a -scan 3s
