@@ -28,6 +28,7 @@ import GedaTransfer, {
   type UploadProgressEvent,
 } from '../../modules/geda-transfer';
 import { uploadMetadata, buildPlan } from '../core/plan';
+import { mapPool } from '../core/pool';
 import { WorkQueue, isAbort } from '../core/queue';
 import { ThroughputMeter } from '../core/throughput';
 import type { Asset, Receiver, TransferItem } from '../core/types';
@@ -44,9 +45,6 @@ import { connect } from './session';
  * pairing time and the smaller of the two wins.
  */
 export const DEFAULT_CONCURRENCY = 8;
-
-/** How many assets are resolved to file paths at once, during preparation. */
-const PREPARE_CONCURRENCY = 6;
 
 export type TransferPhase = 'idle' | 'preparing' | 'transferring' | 'paused' | 'done' | 'cancelled';
 
@@ -164,35 +162,17 @@ export class Transfer {
 
   // MARK: preparation
 
-  /**
-   * Turns library entries into assets with a real file behind them.
-   *
-   * Bounded concurrency rather than one at a time: the export is I/O, and six
-   * at once is roughly where an iPhone stops going faster. Failures here are
-   * per-asset -- one photo stuck in iCloud must not stop the other four
-   * hundred.
-   */
+  /** Turns library entries into assets with a real file behind them. */
   private async prepare(summaries: AssetSummary[]): Promise<Asset[]> {
     this.setPhase('preparing');
     this.emit();
 
     const startedAt = Date.now();
-    const resolved: Asset[] = [];
-    let index = 0;
-
-    const workers = Array.from({ length: PREPARE_CONCURRENCY }, async () => {
-      while (index < summaries.length && this.phase === 'preparing') {
-        const summary = summaries[index]!;
-        index += 1;
-        try {
-          resolved.push(await resolveAsset(summary));
-        } catch (error) {
-          this.note(error, summary.filename);
-        }
-      }
+    const resolved = await mapPool(summaries, resolveAsset, {
+      shouldContinue: () => this.phase === 'preparing',
+      onError: (error, summary) => this.note(error, summary.filename),
     });
 
-    await Promise.all(workers);
     this.prepareMs = Date.now() - startedAt;
     return resolved;
   }

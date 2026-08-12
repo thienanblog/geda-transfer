@@ -305,3 +305,98 @@ every writable file reports 0666 and the assertion can only ever fail. What
 protects the key there is the ACL on the user profile directory the state
 lives in, which `os.Stat` does not report. The check is skipped on Windows
 rather than weakened everywhere else.
+
+## 2026-08-12 — Background uploads send a staged copy, not the library original
+A background `URLSession` hands its tasks to `nsurlsessiond`, a system process,
+and that process reads the body file itself — often hours later, with this app
+long since terminated. It does not inherit the app's access to the photo
+library, so a task pointed at a `PHAsset`'s original fails, silently and much
+later, in a process nobody is watching.
+
+So every background upload is copied into the app container first, and the
+native side deletes the copy the moment the receiver confirms the file —
+including when the app is not running, because the delegate runs in whatever
+process the system launched to deliver the completion. Staging is bounded by a
+file count, a byte budget, and half of the phone's free space, whichever is
+smallest. Whatever does not fit waits for the next kickoff, once earlier copies
+have been deleted.
+
+The foreground path is unchanged and still streams straight from the library:
+it runs inside this app, where the entitlement applies.
+
+## 2026-08-12 — Everything a background upload needs is on disk, not in JavaScript
+The system relaunches the app to say a task finished. That process may have no
+React runtime, and starting one to answer "which upload was that?" would blow
+the few seconds the system allows before it kills the app for dawdling.
+
+So `BackgroundStore` is a plain JSON file holding, per job, the upload URL, the
+token, the staged path, the size, the tus metadata — and the **SPKI pin**. The
+pin is the one that matters: the TLS challenge for a background task is
+answered by the app's delegate wherever it happens to be running, and a
+delegate that cannot find the pin can only refuse. There is still no override
+(AGENTS.md §3.5); the pin is on disk so it can be *checked*, not so it can be
+skipped.
+
+## 2026-08-12 — The background pin is checked per task, not per session
+`URLSession` offers the TLS challenge to the session delegate or to the task
+delegate, whichever is implemented, and only one of them. The background
+session takes the task-level one on purpose: the task knows which upload it is,
+so each job can be checked against the pin it was created with.
+
+Answering per session would mean deciding from the address alone, and the store
+outlives a re-pairing — one failed job carrying the previous key for the same
+`host:port` would make every upload to that receiver unanswerable, for good.
+The check itself is unchanged and still has no override.
+
+## 2026-08-12 — Resuming a background upload means writing the remainder to a file
+A background session can send a file and nothing else: no data body, no
+streamed request. There is no way to say "start at byte 40,000,000". So a
+resume asks the receiver for its offset, copies the rest of the staged file out
+in 4 MB blocks, and sends that. It costs a second copy of the remainder, once,
+on a path that only runs after an interruption — and the alternative is sending
+the whole file again.
+
+The foreground path does not do this. It streams from an offset, which is
+cheaper and which only a default session allows.
+
+## 2026-08-12 — The Live Activity is derived from disk, and says when it is stale
+Without a push token, only the app can update a Live Activity — and during a
+background transfer the app is usually not running. So the activity's contents
+are computed from `BackgroundStore` rather than passed in from JavaScript,
+which means the process the system launches to deliver a completion can update
+it and end it with no runtime at all.
+
+Between those wake-ups the figures do go stale, and each update carries a
+`staleDate` twenty minutes out so the system dims the activity rather than
+presenting a number that stopped being true an hour ago. The subtitle says
+"continues in the background" rather than showing a countdown that keeps
+stalling, because an estimate the system is free to ignore is not an estimate.
+
+## 2026-08-12 — The widget extension is a config plugin, because ios/ is generated
+`mobile/ios/` is produced by `expo prebuild` and is not checked in, so a target
+added by hand in Xcode would vanish on the next clean prebuild. The Live
+Activity's widget extension is therefore described in
+`mobile/plugins/withLiveActivity.js`: it copies the sources in, adds the
+target, embeds the product, and makes the app depend on it.
+
+Two details cost an afternoon each and are worth writing down. Passing a
+filename to `addBuildPhase` for the embed phase creates a file reference that
+belongs to no group, and CocoaPods then refuses to rewrite the project at all
+("no parent for object"); the target's own product reference has to be embedded
+instead. And `addTargetDependency` does nothing — silently, no error — when the
+project has no `PBXTargetDependency` section yet, which a single-target
+generated project does not.
+
+`GedaTransferAttributes.swift` is compiled into both binaries. ActivityKit
+pairs the app's activity with the widget by the type's name, so the two
+declarations must be identical, and one file copied into both targets is the
+only way to guarantee that.
+
+## 2026-08-12 — BGProcessingTask kicks off, it does not transfer
+The registered handler runs on power and Wi-Fi, hands whatever is already
+staged back to the background session, and returns. It does not enumerate the
+photo library and it does not stage anything new: it gets a few seconds of a
+budget the system may withdraw, and the transfer itself belongs to
+`nsurlsessiond` regardless of whether the app is alive to watch it
+(AGENTS.md §3.2). `requiresExternalPower` is what makes running it acceptable
+at all.

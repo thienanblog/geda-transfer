@@ -8,7 +8,9 @@
     "userInterfaceStyle": "dark",
     "newArchEnabled": true,
     "scheme": "geda",
-    "platforms": ["ios"],
+    "platforms": [
+      "ios"
+    ],
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
@@ -21,11 +23,20 @@
         "NSPhotoLibraryUsageDescription": "Geda Transfer reads the photos and videos you choose to send to your own computer. It never modifies or deletes anything.",
         "NSCameraUsageDescription": "The camera is used once, to scan the pairing code your computer shows.",
         "NSLocalNetworkUsageDescription": "Geda Transfer sends your photos directly to your computer over your own network. Nothing is uploaded to any service.",
-        "NSBonjourServices": ["_gedatransfer._tcp"],
+        "NSBonjourServices": [
+          "_gedatransfer._tcp"
+        ],
         "ITSAppUsesNonExemptEncryption": false,
         "NSAppTransportSecurity": {
           "NSAllowsLocalNetworking": true
-        }
+        },
+        "UIBackgroundModes": [
+          "processing"
+        ],
+        "BGTaskSchedulerPermittedIdentifiers": [
+          "app.geda.transfer.kickoff"
+        ],
+        "NSSupportsLiveActivities": true
       }
     },
     "plugins": [
@@ -44,7 +55,8 @@
         {
           "cameraPermission": "The camera is used once, to scan the pairing code your computer shows."
         }
-      ]
+      ],
+      "./plugins/withLiveActivity"
     ]
   }
 }

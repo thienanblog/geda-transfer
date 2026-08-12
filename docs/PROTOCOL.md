@@ -376,6 +376,12 @@ learn the current offset.
 The client opens 6–8 concurrent uploads over one HTTP/2 connection. Small files
 are pipelined — never wait for a per-file round trip.
 
+A resume may come from a **different connection, process, or client instance**
+than the one that started the upload: on iOS the transfer is owned by the
+system and the app may have been terminated in between. The `HEAD` is therefore
+the only source of truth about how much arrived — a client must never resume
+from a figure it remembered.
+
 ### 5.3 Completion
 
 On the final `PATCH`, the receiver verifies the full BLAKE3 against `hash`.
