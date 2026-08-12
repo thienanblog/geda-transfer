@@ -64,6 +64,23 @@ export async function recordSent(
   asset: Asset,
   storedPath: string,
 ): Promise<void> {
+  await recordSentKey(receiverId, ledgerKey(asset), asset.size, storedPath);
+}
+
+/**
+ * The same, for an arrival the app learned about second-hand.
+ *
+ * A background upload finishes in a system process and is reported to whatever
+ * launch of the app happens to hear about it, which has the asset's identifier
+ * and size but not the `Asset` itself -- the photo library was never opened in
+ * that process.
+ */
+export async function recordSentKey(
+  receiverId: string,
+  assetKey: string,
+  size: number,
+  storedPath: string,
+): Promise<void> {
   await (await db()).runAsync(
     `INSERT INTO sent (receiver_id, asset_key, stored_path, size, sent_at)
      VALUES (?, ?, ?, ?, ?)
@@ -71,9 +88,9 @@ export async function recordSent(
        stored_path = excluded.stored_path,
        sent_at     = excluded.sent_at`,
     receiverId,
-    ledgerKey(asset),
+    assetKey,
     storedPath,
-    asset.size,
+    size,
     Date.now(),
   );
 }

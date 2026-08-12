@@ -13,7 +13,7 @@ while IFS= read -r file; do
     if ! head -20 "$file" | grep -qE 'Apache License, Version 2\.0|SPDX-License-Identifier: Apache-2\.0'; then
         missing+=("$file")
     fi
-done < <(git ls-files '*.go' '*.sql' '*.sh' '*.ts' '*.tsx')
+done < <(git ls-files '*.go' '*.sql' '*.sh' '*.ts' '*.tsx' '*.swift' '*.js')
 
 if [ ${#missing[@]} -gt 0 ]; then
     echo "Missing Apache-2.0 header:"

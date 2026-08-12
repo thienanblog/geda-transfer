@@ -20,6 +20,8 @@
 
 import { NativeModule, requireNativeModule } from 'expo';
 
+import type { BackgroundJob } from '../../src/core/background';
+
 export type UploadProgressEvent = {
   uploadId: string;
   bytesSent: number;
@@ -32,9 +34,40 @@ export type UploadCreatedEvent = {
   location: string;
 };
 
+/** Progress from the background session, while the app happens to be alive. */
+export type BackgroundProgressEvent = {
+  uploadId: string;
+  bytesSent: number;
+  totalBytes: number;
+};
+
 export type GedaTransferEvents = {
   onUploadProgress: (event: UploadProgressEvent) => void;
   onUploadCreated: (event: UploadCreatedEvent) => void;
+  onBackgroundProgress: (event: BackgroundProgressEvent) => void;
+  onBackgroundFinished: (job: BackgroundJob) => void;
+};
+
+/** One file for the background session. */
+export type BackgroundRequest = {
+  uploadId: string;
+  receiverId: string;
+  /** Shown on the Lock Screen by a process that cannot ask JavaScript. */
+  receiverName: string;
+  assetId: string;
+  filename: string;
+  baseUrl: string;
+  pin: string;
+  token: string;
+  /**
+   * A copy inside the app container, made by the caller.
+   *
+   * It cannot be a photo library path: the bytes are sent by a system process
+   * that has no access to the library (see DECISIONS).
+   */
+  stagedPath: string;
+  size: number;
+  metadata: Record<string, string>;
 };
 
 export type RequestOptions = {
@@ -98,6 +131,36 @@ declare class GedaTransferModule extends NativeModule<GedaTransferEvents> {
 
   cancel(uploadId: string): Promise<void>;
   cancelAll(): Promise<void>;
+
+  /** Where a staged copy must be written before it can be sent. */
+  backgroundStagingDirectory(): string;
+
+  /**
+   * Creates the uploads and hands the files to the system.
+   *
+   * Returns the ids that were accepted. From this point the transfer belongs
+   * to `nsurlsessiond` and continues whether or not this app is running.
+   */
+  startBackground(requests: BackgroundRequest[]): Promise<string[]>;
+
+  /** Hands back anything the system stopped working on, resuming by offset. */
+  reconcileBackground(): Promise<BackgroundJob[]>;
+
+  /** The same, for jobs that failed outright. */
+  retryBackground(): Promise<BackgroundJob[]>;
+
+  backgroundJobs(): BackgroundJob[];
+
+  /** Forgets delivered jobs, once they are in the ledger. Failures stay. */
+  clearDeliveredBackground(): void;
+
+  cancelBackground(): void;
+
+  /** Asks the system for a wake-up on power and Wi-Fi. */
+  scheduleBackgroundKickoff(): void;
+
+  /** False when the user has turned Live Activities off for this app. */
+  liveActivitiesAvailable(): boolean;
 }
 
 export default requireNativeModule<GedaTransferModule>('GedaTransfer');

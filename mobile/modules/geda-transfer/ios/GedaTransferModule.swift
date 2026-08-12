@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import ActivityKit
 import ExpoModulesCore
 import Foundation
 
@@ -42,7 +43,25 @@ public class GedaTransferModule: Module {
   public func definition() -> ModuleDefinition {
     Name("GedaTransfer")
 
-    Events("onUploadProgress", "onUploadCreated")
+    Events(
+      "onUploadProgress", "onUploadCreated", "onBackgroundProgress", "onBackgroundFinished")
+
+    OnCreate {
+      // Progress and completions from the background session, forwarded only
+      // while there is a JavaScript runtime to forward them to. The transfer
+      // does not depend on anyone listening.
+      BackgroundUploader.shared.onEvent = { [weak self] event in
+        guard let self else { return }
+        switch event {
+        case .progress(let uploadId, let sent, let total):
+          self.sendEvent(
+            "onBackgroundProgress",
+            ["uploadId": uploadId, "bytesSent": sent, "totalBytes": total])
+        case .finished(let job):
+          self.sendEvent("onBackgroundFinished", Self.dictionary(from: job))
+        }
+      }
+    }
 
     AsyncFunction("request") { (options: RequestOptions) -> [String: Any] in
       let client = self.client(for: options.pin)
@@ -74,7 +93,53 @@ public class GedaTransferModule: Module {
       self.eachClient { $0.cancelAll() }
     }
 
+    // MARK: Background transfers
+
+    /// Where a caller must put the copy it wants uploaded in the background.
+    Function("backgroundStagingDirectory") { () -> String in
+      BackgroundStore.stagingDirectory().path
+    }
+
+    AsyncFunction("startBackground") { (requests: [BackgroundRequestOptions]) -> [String] in
+      await BackgroundUploader.shared.start(requests.map { $0.asRequest() })
+    }
+
+    /// Hands back to the system anything it stopped working on, offset-aware.
+    AsyncFunction("reconcileBackground") { () -> [[String: Any]] in
+      await BackgroundUploader.shared.reconcile()
+      return BackgroundUploader.shared.snapshot().map(Self.dictionary(from:))
+    }
+
+    AsyncFunction("retryBackground") { () -> [[String: Any]] in
+      await BackgroundUploader.shared.retryFailed()
+      return BackgroundUploader.shared.snapshot().map(Self.dictionary(from:))
+    }
+
+    Function("backgroundJobs") { () -> [[String: Any]] in
+      BackgroundUploader.shared.snapshot().map(Self.dictionary(from:))
+    }
+
+    /// Forgets the delivered jobs, once the app has written them to its
+    /// ledger. Failures stay, to be retried and to be shown.
+    Function("clearDeliveredBackground") {
+      BackgroundUploader.shared.clearDelivered()
+    }
+
+    Function("cancelBackground") {
+      BackgroundUploader.shared.cancelAll()
+    }
+
+    /// Asks the system for a wake-up on power and Wi-Fi.
+    Function("scheduleBackgroundKickoff") {
+      GedaBackgroundDelegate.scheduleKickoff()
+    }
+
+    Function("liveActivitiesAvailable") { () -> Bool in
+      ActivityAuthorizationInfo().areActivitiesEnabled
+    }
+
     OnDestroy {
+      BackgroundUploader.shared.onEvent = nil
       self.eachClient { $0.invalidate() }
       self.clientsLock.lock()
       self.clients.removeAll()
@@ -92,44 +157,35 @@ public class GedaTransferModule: Module {
   /// of them (AGENTS.md §5).
   private func upload(_ options: UploadOptions) async throws -> [String: Any] {
     let client = self.client(for: options.pin)
-    let authorization = self.headers(token: options.token, extra: [:])
 
     var location = options.location
     var offset: Int64 = 0
 
     if let existing = location {
-      var head = authorization
-      head["Tus-Resumable"] = "1.0.0"
-      let response = try await client.send(url: existing, method: "HEAD", headers: head, body: nil)
-
-      if response.status == 200 || response.status == 204 {
-        offset = Int64(response.headers["upload-offset"] ?? "") ?? 0
-      } else {
+      switch try await Tus.offset(client: client, location: existing, token: options.token) {
+      case .at(let value):
+        offset = value
+      case .gone:
         // The receiver swept the partial upload, or it finished and was
         // committed. Either way there is nothing to resume; start again.
         location = nil
       }
     }
 
-    if location == nil {
-      var create = authorization
-      create["Tus-Resumable"] = "1.0.0"
-      create["Upload-Length"] = String(options.size)
-      if let metadata = Self.encodeMetadata(options.metadata) {
-        create["Upload-Metadata"] = metadata
+    let target: String
+    if let existing = location {
+      target = existing
+    } else {
+      do {
+        target = try await Tus.create(
+          client: client, baseUrl: options.baseUrl, token: options.token,
+          size: Int64(options.size), metadata: options.metadata)
+      } catch {
+        throw Exception(
+          name: "ERR_UPLOAD_CREATE",
+          description: (error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
       }
-
-      let response = try await client.send(
-        url: options.baseUrl + "/v1/files/", method: "POST", headers: create, body: nil)
-      guard response.status == 201, let created = response.headers["location"] else {
-        throw Exception(name: "ERR_UPLOAD_CREATE", description: Self.message(response))
-      }
-      location = Self.absolute(created, base: options.baseUrl)
       offset = 0
-    }
-
-    guard let target = location else {
-      throw Exception(name: "ERR_UPLOAD_CREATE", description: "the receiver returned no location")
     }
 
     // Announced before a byte moves. If the transfer is paused halfway
@@ -145,40 +201,27 @@ public class GedaTransferModule: Module {
       ]
     }
 
-    var patch = authorization
-    patch["Tus-Resumable"] = "1.0.0"
-    patch["Upload-Offset"] = String(offset)
-    patch["Content-Type"] = "application/offset+octet-stream"
-
     let response = try await client.upload(
       url: target,
       method: "PATCH",
-      headers: patch,
+      headers: Tus.patchHeaders(token: options.token, offset: offset),
       filePath: options.filePath,
       offset: offset,
       uploadID: options.uploadId
     )
 
     guard response.status == 204 || response.status == 200 else {
-      throw Exception(name: "ERR_UPLOAD", description: Self.message(response))
-    }
-
-    // The receiver reports where the file landed once it is durable, which is
-    // what makes a later "delete after transfer" safe to even consider.
-    var storedPath = ""
-    if let encoded = response.headers["geda-stored-path"],
-      let raw = Data(base64Encoded: encoded),
-      let decoded = String(data: raw, encoding: .utf8)
-    {
-      storedPath = decoded
+      throw Exception(name: "ERR_UPLOAD", description: Tus.message(response))
     }
 
     return [
       "location": target,
       "status": response.status,
+      // The receiver reports where the file landed once it is durable, which
+      // is what makes a later "delete after transfer" safe to even consider.
+      "storedPath": Tus.storedPath(from: response.headers),
       "bytesSent": Int64(options.size) - offset,
-      "storedPath": storedPath,
-      "deduplicated": response.headers["geda-deduplicated"] == "1",
+      "deduplicated": Tus.deduplicated(from: response.headers),
       "resumedFrom": offset,
     ]
   }
@@ -287,28 +330,23 @@ public class GedaTransferModule: Module {
     ["status": response.status, "headers": response.headers, "body": response.body]
   }
 
-  private static func message(_ response: PinnedClient.Response) -> String {
-    response.body.isEmpty ? "the receiver answered \(response.status)" : response.body
+  private static func dictionary(from job: BackgroundJob) -> [String: Any] {
+    [
+      "uploadId": job.uploadId,
+      "receiverId": job.receiverId,
+      "assetId": job.assetId,
+      "filename": job.filename,
+      "state": job.state.rawValue,
+      "size": job.size,
+      // Against the whole asset, not against the current attempt: a resumed
+      // upload starts its task at zero and the person watching does not care.
+      "bytesSent": job.totalSent,
+      "storedPath": job.storedPath ?? "",
+      "deduplicated": job.deduplicated,
+      "error": job.error ?? "",
+    ]
   }
 
-  /// tus metadata is `key base64(value)` pairs, comma separated.
-  private static func encodeMetadata(_ metadata: [String: String]) -> String? {
-    guard !metadata.isEmpty else { return nil }
-    // Sorted so that the header is stable, which makes a failing request
-    // reproducible from a log.
-    return
-      metadata
-      .sorted { $0.key < $1.key }
-      .map { "\($0.key) \(Data($0.value.utf8).base64EncodedString())" }
-      .joined(separator: ",")
-  }
-
-  private static func absolute(_ location: String, base: String) -> String {
-    if location.hasPrefix("http://") || location.hasPrefix("https://") {
-      return location
-    }
-    return base + (location.hasPrefix("/") ? location : "/" + location)
-  }
 }
 
 struct RequestOptions: Record {
@@ -330,4 +368,40 @@ struct UploadOptions: Record {
   @Field var metadata: [String: String] = [:]
   /// Set when resuming an upload the receiver already knows about.
   @Field var location: String? = nil
+}
+
+
+/// One file to send in the background.
+///
+/// `stagedPath` is a copy the caller has already made inside the app
+/// container. It cannot be a photo library path: the system process that does
+/// the sending has no access to the library (see DECISIONS).
+struct BackgroundRequestOptions: Record {
+  @Field var uploadId: String = ""
+  @Field var receiverId: String = ""
+  @Field var receiverName: String = ""
+  @Field var assetId: String = ""
+  @Field var filename: String = ""
+  @Field var baseUrl: String = ""
+  @Field var pin: String = ""
+  @Field var token: String = ""
+  @Field var stagedPath: String = ""
+  @Field var size: Int = 0
+  @Field var metadata: [String: String] = [:]
+
+  func asRequest() -> BackgroundUploader.Request {
+    BackgroundUploader.Request(
+      uploadId: uploadId,
+      receiverId: receiverId,
+      receiverName: receiverName,
+      assetId: assetId,
+      filename: filename,
+      baseUrl: baseUrl,
+      pin: pin,
+      token: token,
+      stagedPath: stagedPath,
+      size: Int64(size),
+      metadata: metadata
+    )
+  }
 }

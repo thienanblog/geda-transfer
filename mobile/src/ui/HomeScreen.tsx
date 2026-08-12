@@ -15,10 +15,12 @@
 import { useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 
-import { formatBytes } from '../core/throughput';
 import type { Receiver } from '../core/types';
+import GedaTransfer from '../../modules/geda-transfer';
+import { startBackgroundTransfer } from '../engine/background';
 import { forgetReceiver } from '../data/receivers';
 import { checkAccess, listAssets, requestAccess, type AssetSummary } from '../media/library';
+import { BackgroundCard, useBackgroundTransfers } from './BackgroundCard';
 import { Button, Card, Muted, Screen } from './components';
 import { colors, spacing } from './theme';
 
@@ -46,6 +48,9 @@ export function HomeScreen({
   const [summaries, setSummaries] = useState<AssetSummary[]>([]);
   const [keepAwake, setKeepAwake] = useState(true);
   const [loading, setLoading] = useState(false);
+  const [handingOver, setHandingOver] = useState(false);
+  const [handOver, setHandOver] = useState<string>();
+  const background = useBackgroundTransfers();
 
   useEffect(() => {
     void (async () => setAccess(await checkAccess()))();
@@ -65,9 +70,33 @@ export function HomeScreen({
 
   const receiver = receivers.find((entry) => entry.deviceId === selected) ?? receivers[0];
 
+  /**
+   * Hands the batch to the system and comes straight back.
+   *
+   * Deliberately not a screen with a progress bar on it: the point of a
+   * background transfer is that the app is in the way, and inviting someone to
+   * sit and watch one would be inviting them to keep it running.
+   */
+  const sendInBackground = async () => {
+    if (!receiver) return;
+    setHandingOver(true);
+    setHandOver(undefined);
+    try {
+      const result = await startBackgroundTransfer({ receiver, summaries });
+      background.refresh();
+      setHandOver(describeHandOver(result, GedaTransfer.liveActivitiesAvailable()));
+    } catch (error) {
+      setHandOver(error instanceof Error ? error.message : String(error));
+    } finally {
+      setHandingOver(false);
+    }
+  };
+
   return (
     <Screen title="Geda Transfer">
       <ScrollView contentContainerStyle={{ gap: spacing.md, paddingBottom: spacing.xl }}>
+        <BackgroundCard summary={background.summary} onCancelled={background.refresh} />
+
         <Card>
           <Text style={styles.heading}>Receivers</Text>
           {receivers.length === 0 ? (
@@ -144,6 +173,15 @@ export function HomeScreen({
           onPress={() => receiver && onSend({ receiver, summaries, keepAwake })}
         />
 
+        <Button
+          label={handingOver ? 'Handing over to iOS…' : 'Send in the background'}
+          tone="quiet"
+          disabled={!receiver || summaries.length === 0 || handingOver}
+          onPress={() => void sendInBackground()}
+        />
+
+        {handOver ? <Muted>{handOver}</Muted> : null}
+
         {receiver ? (
           <Button
             label="Run the benchmark"
@@ -159,6 +197,27 @@ export function HomeScreen({
       </ScrollView>
     </Screen>
   );
+}
+
+function describeHandOver(
+  result: { queued: number; deferred: number; alreadyThere: number; errors: string[] },
+  liveActivities: boolean,
+): string {
+  if (result.queued === 0 && result.deferred === 0) {
+    return result.errors[0] ?? 'Nothing left to send — this receiver already has all of it.';
+  }
+
+  const parts = [`${result.queued} queued with iOS; you can close the app.`];
+  if (result.deferred > 0) {
+    parts.push(`${result.deferred} wait for the next batch, so the copies do not fill the phone.`);
+  }
+  if (result.alreadyThere > 0) parts.push(`${result.alreadyThere} were already there.`);
+  if (!liveActivities) {
+    // Otherwise the app has promised a Lock Screen that will never appear.
+    parts.push('Turn on Live Activities for this app in Settings to watch it from the Lock Screen.');
+  }
+  if (result.errors.length > 0) parts.push(result.errors[0]!);
+  return parts.join(' ');
 }
 
 const styles = StyleSheet.create({

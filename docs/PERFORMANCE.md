@@ -45,3 +45,55 @@ first bottleneck.
 
 `scripts/verify-p4.sh` fails while this table has no row: an unmeasured
 performance gate is not a passed one.
+
+---
+
+## P5 gate — mobile background upload
+
+**The gate (docs/PLAN.md):** the app is force-quit mid-transfer, the transfer
+completes on its own, and the result is verified by hash.
+
+`scripts/verify-p5.sh` checks the half of this that a script can: an upload
+interrupted part way through is resumed **by a second, independent client**
+that shares nothing with the first but the tus URL — which is exactly the
+situation after a relaunch — and the stored file's SHA-256 matches the source.
+
+The other half needs a phone. No simulator runs `nsurlsessiond` faithfully, and
+no script can swipe an app away.
+
+### How to run it
+
+1. Start a receiver:
+   ```bash
+   docker compose -f docker/compose.yml up -d
+   ```
+2. Build onto a physical iPhone:
+   ```bash
+   cd mobile && npx eas build --profile development --platform ios
+   ```
+3. Pair, then choose **Send in the background**. Wait for "queued with iOS".
+4. **Swipe the app away** from the app switcher while files are still going.
+5. Leave the phone on Wi-Fi, ideally on charge. The Lock Screen activity keeps
+   showing progress; it dims when its figures go stale, which is expected
+   between the system's wake-ups.
+6. Reopen the app. Every file should be marked as sent.
+7. On the receiver, hash the arrivals and compare against the originals:
+   ```bash
+   find /destination -type f -newer /tmp/marker -exec shasum -a 256 {} +
+   ```
+8. Paste the row below.
+
+### Results
+
+Background transfers are **discretionary**: the system decides when to spend
+the radio, so the elapsed time is a property of the phone's day — battery,
+thermals, whether it was charging — and not of this code. It is recorded
+anyway, because a background transfer that takes ten times longer than the
+foreground one is still the right trade and a hundred times longer is not.
+
+| Date | Device | iOS | Link | Receiver | Files | GB | Killed after | Elapsed | Completed | Hashes verified | Notes |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| _no run recorded yet_ | | | | | | | | | | | |
+
+The P4 baseline above is the comparison: background is expected to be slower,
+never wrong.
