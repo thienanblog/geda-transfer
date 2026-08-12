@@ -67,6 +67,20 @@ jobs:
             CGO_ENABLED=0 GOOS=${target%/*} GOARCH=${target#*/} go build ./...
           done
 
+  gates:
+    name: phase gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: core/go.mod
+          cache-dependency-path: core/go.sum
+
+      # Each phase's gate from docs/PLAN.md is scripted so it is checked
+      # against a real server over real TLS, not only in Go tests.
+      - run: ./scripts/verify-p1.sh
+
   licence:
     name: licence headers
     runs-on: ubuntu-latest
