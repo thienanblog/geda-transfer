@@ -52,6 +52,14 @@ docker compose -f docker/compose.yml exec gedad gedad pair
 The second command draws a pairing QR code in your terminal. There is also a
 plain `gedad` binary with a systemd unit — see [cli/README.md](cli/README.md).
 
+## The app
+
+The iOS app is an Expo project in [mobile/](mobile), built with a custom
+development client — Expo Go cannot load the native transfer module. See
+[mobile/AGENTS.md](mobile/AGENTS.md).
+
+Measured speeds live in [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
+
 ## Building
 
 See [AGENTS.md](AGENTS.md) for architecture and [docs/PLAN.md](docs/PLAN.md)

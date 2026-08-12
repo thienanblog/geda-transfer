@@ -227,3 +227,51 @@ curl and openssl on a second Docker network, so every packet is routed, and the
 script asserts the route is indirect before trusting anything else. It also
 recomputes the SPKI pin from the served certificate with openssl — the same
 check the phone makes — so the gate covers the pin, not only the upload.
+
+## 2026-08-12 — The phone needs native code, and only for two things
+Everything about which asset goes next, how many at once, and what the progress
+bar says is TypeScript, where it is testable without a device. Two things
+cannot be: the receiver's certificate is self-signed and pinned to one public
+key, which no JavaScript HTTP client on iOS can express; and file bytes must
+never cross the JavaScript bridge (AGENTS.md §3.8). Both are `URLSession` with
+a delegate, so the app carries a small Swift module and nothing more.
+
+The SPKI is taken out of the certificate's DER rather than rebuilt from the
+public key. `SecKeyCopyExternalRepresentation` returns the bare key — for an EC
+key just `04 || X || Y` — and reconstructing the algorithm header around it
+means hardcoding one prefix per key type and silently computing the wrong
+digest for anything else. `scripts/verify-p4.sh` checks the Swift and the Go
+implementations agree on a real receiver certificate, because a disagreement
+would make every pairing fail with a mismatch that has no override.
+
+## 2026-08-12 — Listing is cheap, resolving is not, and they are timed apart
+Getting a file path out of a `PHAsset` is the slowest step in a transfer, ahead
+of the network (AGENTS.md §5). So listing uses `exeForMetadata`, which never
+resolves a path, and resolution happens afterwards in a bounded pool. The two
+phases are measured separately and both are recorded: a transfer rate that
+looks excellent next to a much lower wall-clock rate is the signature of the
+export being the bottleneck, and that is the thing worth optimising next.
+
+## 2026-08-12 — Mobile skips the dedup probe for now and keeps a local record
+The protocol's dedup probe needs a BLAKE3 of the first megabyte of each file
+(docs/PROTOCOL.md §4), which on the phone means either moving those bytes
+through the bridge — forbidden, and slower than sending them — or a native
+BLAKE3, which arrives with the rest of the native hashing work. Until then the
+app keeps its own record of what it has sent to each receiver, keyed on the
+asset identifier *and its size*, so an edited photo is sent again. The receiver
+still deduplicates by full hash on arrival, so a missing entry costs bandwidth
+and never correctness.
+
+## 2026-08-12 — Assets that live only in iCloud are skipped, never downloaded
+Pulling gigabytes down over a cellular connection so they can be pushed back up
+over Wi-Fi is not the transfer the user asked for, and on a metered plan it is
+an expensive surprise. They are reported as skipped with a message that says
+what to do about it.
+
+## 2026-08-12 — The P4 gate cannot be automated, so the script says so
+P4's gate is a measured figure over 200 photos and a 4K video. It has to come
+from a physical iPhone on a real link: a simulator has no `PHAsset` export cost
+and no radio, so a number from one would be a fiction that every later phase is
+then compared against. `scripts/verify-p4.sh` checks everything around the
+number — types, the tested core, the native sources, and that both sides agree
+on the pin — and then fails while `docs/PERFORMANCE.md` holds no recorded run.
