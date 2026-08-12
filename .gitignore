@@ -1,0 +1,32 @@
+# Go
+/core/bin/
+/cli/bin/
+*.test
+*.out
+
+# Wails
+/desktop/build/bin/
+/desktop/frontend/dist/
+/desktop/frontend/node_modules/
+
+# Expo / Node
+node_modules/
+.expo/
+/mobile/ios/
+/mobile/android/
+*.ipa
+*.apk
+*.aab
+
+# Local state
+*.db
+*.db-wal
+*.db-shm
+*.pem
+*.key
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
