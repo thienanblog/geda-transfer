@@ -21,6 +21,7 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -43,6 +44,15 @@ func TestLoadCreatesAndPersists(t *testing.T) {
 		info, err := os.Stat(filepath.Join(dir, name))
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
+		}
+
+		// Windows has no Unix permission bits. Go synthesises a mode from the
+		// read-only attribute alone, so every writable file reports 0666 and
+		// this assertion can only ever fail there. What actually protects the
+		// key on Windows is the ACL of the user profile directory the state
+		// lives in, which is not something os.Stat reports.
+		if runtime.GOOS == "windows" {
+			continue
 		}
 		if perm := info.Mode().Perm(); perm != 0o600 {
 			t.Errorf("%s has mode %o, want 600", name, perm)

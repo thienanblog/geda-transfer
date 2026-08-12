@@ -115,13 +115,32 @@ receiver_id=$(printf '%s' "$payload" | sed -n 's/.*"device_id":"\([^"]*\)".*/\1/
 pass "offer issued for receiver $receiver_id"
 
 echo "==> 3. the served certificate matches the pinned key"
+# The receiver is up on its own subnet, but reaching it from the other one
+# goes through the router; wait for that path before concluding anything about
+# certificates.
+deadline=$(( $(date +%s) + 60 ))
+until client "curl -sS -k --max-time 5 -o /dev/null $BASE/v1/info" >/dev/null 2>&1; do
+    [ "$(date +%s)" -lt "$deadline" ] \
+        || fail "the client could not reach $BASE across the router: $(client "curl -sS -k --max-time 5 $BASE/v1/info" 2>&1 | tail -3)"
+    sleep 1
+done
+
 # Exactly what the phone checks on every later connection: SHA-256 of the
 # certificate's SubjectPublicKeyInfo, base64. Not the certificate itself --
 # that changes on renewal (AGENTS.md 3.5).
-served=$(client "openssl s_client -connect $NAS_ADDR:47891 </dev/null 2>/dev/null \
-    | openssl x509 -pubkey -noout \
-    | openssl pkey -pubin -outform der \
-    | openssl dgst -sha256 -binary | base64")
+#
+# The certificate is fetched on its own rather than inside the digest
+# pipeline. An s_client that fails prints nothing, and a pipeline fed nothing
+# happily produces the SHA-256 of the empty string -- which looks exactly like
+# a pin and turns "could not connect" into "wrong key".
+certificate=$(client "openssl s_client -connect $NAS_ADDR:47891 </dev/null 2>/tmp/s_client.err | openssl x509 -pubkey -noout")
+if [ -z "$certificate" ]; then
+    fail "could not read the receiver's certificate: $(client "cat /tmp/s_client.err" 2>/dev/null | tail -5)"
+fi
+
+served=$(printf '%s\n' "$certificate" \
+    | client "openssl pkey -pubin -outform der | openssl dgst -sha256 -binary | base64")
+[ -n "$served" ] || fail "the certificate could not be reduced to a pin"
 [ "$served" = "$pin" ] || fail "served key pins to '$served', the offer said '$pin'"
 pass "SPKI pin matches: $pin"
 

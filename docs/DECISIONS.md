@@ -275,3 +275,33 @@ and no radio, so a number from one would be a fiction that every later phase is
 then compared against. `scripts/verify-p4.sh` checks everything around the
 number — types, the tested core, the native sources, and that both sides agree
 on the pin — and then fails while `docs/PERFORMANCE.md` holds no recorded run.
+
+## 2026-08-12 — Docker isolates bridges, so the P3 harness needs a real router
+The first version of the P3 harness put the client and the receiver on two
+Docker networks and let the host route between them. It passed on the machine
+it was written on and failed on Linux CI: Docker Engine installs
+`DOCKER-ISOLATION` rules that drop forwarding between two bridge networks, so
+no routing table on either side can get a packet across.
+
+The harness now has a routing container attached to both networks, as the P2
+one does. Every hop is within a single bridge — client to router, router to
+receiver — and the crossing happens inside the router, which is what a home
+router or a VPN gateway does. The router masquerades, so the receiver answers
+on-link and needs no route of its own; that is what keeps the receiver
+container exactly as shipped, with no added capabilities and no test code
+inside it.
+
+The failure was also unnecessarily confusing, and that is fixed too. The pin
+check piped `openssl s_client` straight into a digest, and an `s_client` that
+cannot connect prints nothing — so the pipeline produced the SHA-256 of the
+empty string, which looks exactly like a pin. "Could not connect" was reported
+as "wrong key". The certificate is now fetched on its own, its absence is a
+distinct failure, and `s_client`'s stderr is in the message.
+
+## 2026-08-12 — The identity permission check is Unix-only
+`identity.key` is written 0600 and the test says so. On Windows there are no
+Unix permission bits: Go synthesises a mode from the read-only attribute, so
+every writable file reports 0666 and the assertion can only ever fail. What
+protects the key there is the ACL on the user profile directory the state
+lives in, which `os.Stat` does not report. The check is skipped on Windows
+rather than weakened everywhere else.
