@@ -1,0 +1,50 @@
+{
+  "expo": {
+    "name": "Geda Transfer",
+    "slug": "geda-transfer",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "scheme": "geda",
+    "platforms": ["ios"],
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0B0E14"
+    },
+    "ios": {
+      "bundleIdentifier": "app.geda.transfer",
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "Geda Transfer reads the photos and videos you choose to send to your own computer. It never modifies or deletes anything.",
+        "NSCameraUsageDescription": "The camera is used once, to scan the pairing code your computer shows.",
+        "NSLocalNetworkUsageDescription": "Geda Transfer sends your photos directly to your computer over your own network. Nothing is uploaded to any service.",
+        "NSBonjourServices": ["_gedatransfer._tcp"],
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSAppTransportSecurity": {
+          "NSAllowsLocalNetworking": true
+        }
+      }
+    },
+    "plugins": [
+      "expo-secure-store",
+      "expo-sqlite",
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Geda Transfer reads the photos and videos you choose to send to your own computer.",
+          "savePhotosPermission": "Geda Transfer saves files your computer sends to this phone.",
+          "isAccessMediaLocationEnabled": true
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "The camera is used once, to scan the pairing code your computer shows."
+        }
+      ]
+    ]
+  }
+}

@@ -88,6 +88,43 @@ jobs:
             CGO_ENABLED=0 GOOS=${target%/*} GOARCH=${target#*/} go build ./...
           done
 
+  mobile:
+    name: mobile
+    # macOS because the app is iOS-only and the pinning check builds Swift.
+    # Nothing here needs a device: src/core is plain TypeScript on purpose.
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      - run: npm test
+
+      # A syntax and type check of the native module. Building it needs the
+      # iOS platform, which is what the EAS build does; this catches the class
+      # of mistake that would otherwise surface half an hour into one.
+      - name: native module
+        run: |
+          set -e
+          for file in modules/geda-transfer/ios/*.swift; do
+            swiftc -parse "$file"
+          done
+          swiftc -typecheck -sdk "$(xcrun --sdk macosx --show-sdk-path)" \
+            modules/geda-transfer/ios/SPKIPin.swift \
+            modules/geda-transfer/ios/PinnedClient.swift
+
+
   cross-compile:
     name: cross-compile
     runs-on: ubuntu-latest
@@ -133,6 +170,11 @@ jobs:
       # P3 runs the real product image, so this is also what proves the
       # published Dockerfile builds and works.
       - run: ./scripts/verify-p3.sh
+
+      # P4's gate is a measured number from a physical iPhone, so this step
+      # fails until a run is recorded in docs/PERFORMANCE.md. That is the
+      # point: an unmeasured performance gate is not a passed one.
+      - run: ./scripts/verify-p4.sh
 
   licence:
     name: licence headers

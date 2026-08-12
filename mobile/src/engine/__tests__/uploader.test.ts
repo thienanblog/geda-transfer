@@ -1,0 +1,269 @@
+// Copyright 2026 Geda
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// The engine, with the device replaced.
+//
+// Everything the phone provides -- the photo library, the keychain, the
+// URLSession that moves the bytes -- is a boundary the engine talks to through
+// a handful of functions, so the scheduling, the resuming, and the bookkeeping
+// can all be exercised here rather than only on a device.
+
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import type { Asset, Receiver } from '../../core/types';
+
+const native = {
+  uploads: [] as { uploadId: string; location?: string; size: number }[],
+  listeners: new Map<string, (event: unknown) => void>(),
+  /** Uploads that hang until released, keyed by upload id. */
+  gates: new Map<string, () => void>(),
+  hangFor: new Set<string>(),
+  cancelled: [] as string[],
+  peakConcurrency: 0,
+  inFlight: 0,
+  dedup: new Set<string>(),
+  /** Rejects a hanging upload, the way URLSession's cancel does. */
+  cancelHooks: new Map<string, () => void>(),
+};
+
+vi.mock('../../../modules/geda-transfer', () => ({
+  default: {
+    addListener(name: string, handler: (event: unknown) => void) {
+      native.listeners.set(name, handler);
+      return { remove: () => native.listeners.delete(name) };
+    },
+    async race() {
+      return 'https://receiver.test:47891';
+    },
+    async request() {
+      return { status: 200, headers: {}, body: '{}' };
+    },
+    async upload(options: { uploadId: string; location?: string; size: number }) {
+      native.uploads.push({ ...options });
+      native.inFlight += 1;
+      native.peakConcurrency = Math.max(native.peakConcurrency, native.inFlight);
+
+      const location = options.location ?? `https://receiver.test:47891/v1/files/${options.uploadId}`;
+      native.listeners.get('onUploadCreated')?.({ uploadId: options.uploadId, location });
+
+      try {
+        if (native.hangFor.has(options.uploadId)) {
+          await new Promise<void>((resolve, reject) => {
+            native.gates.set(options.uploadId, resolve);
+            native.cancelHooks.set(options.uploadId, () =>
+              reject(new Error('URLSession: cancelled')),
+            );
+          });
+        }
+
+        // A real upload always yields; without a turn of the event loop here
+        // the pool would look single-threaded because every "upload" would
+        // finish before the next one was started.
+        await new Promise((resolve) => setTimeout(resolve, 1));
+
+        native.listeners.get('onUploadProgress')?.({
+          uploadId: options.uploadId,
+          bytesSent: options.size,
+          totalBytes: options.size,
+        });
+
+        return {
+          location,
+          status: 204,
+          bytesSent: options.size,
+          storedPath: `2026/${options.uploadId}.heic`,
+          deduplicated: native.dedup.has(options.uploadId),
+          resumedFrom: options.location ? Math.floor(options.size / 2) : 0,
+        };
+      } finally {
+        native.inFlight -= 1;
+      }
+    },
+    async cancel(uploadId: string) {
+      native.cancelled.push(uploadId);
+      native.cancelHooks.get(uploadId)?.();
+    },
+    async cancelAll() {
+      for (const hook of native.cancelHooks.values()) hook();
+    },
+  },
+}));
+
+const ledger = {
+  sent: new Map<string, string>(),
+};
+
+vi.mock('../../data/ledger', () => ({
+  async sentKeys() {
+    return new Set(ledger.sent.keys());
+  },
+  async recordSent(_receiverId: string, asset: Asset, storedPath: string) {
+    ledger.sent.set(`${asset.id}:${asset.size}`, storedPath);
+  },
+  async forgetReceiverHistory() {},
+}));
+
+vi.mock('../../media/library', () => ({
+  AssetUnavailableError: class extends Error {},
+  async resolveAsset(summary: { id: string; filename: string; kind: 'photo' | 'video' }) {
+    if (summary.id === 'in-icloud') throw new Error('is in iCloud and not on this device');
+    return {
+      id: summary.id,
+      filename: summary.filename,
+      filePath: `/tmp/${summary.filename}`,
+      size: sizes[summary.id] ?? 1_000_000,
+      kind: summary.kind,
+    } satisfies Asset;
+  },
+}));
+
+vi.mock('../session', () => ({
+  async connect() {
+    return 'https://receiver.test:47891';
+  },
+  ConnectError: class extends Error {},
+}));
+
+const sizes: Record<string, number> = {};
+
+const receiver: Receiver = {
+  deviceId: 'receiver-1',
+  name: 'NAS',
+  spki: 'pin',
+  addrs: ['10.0.0.2:47891'],
+  token: 'token',
+  pairedAt: 0,
+};
+
+function summaries(count: number) {
+  return Array.from({ length: count }, (_, index) => ({
+    id: `asset-${index}`,
+    filename: `IMG_${index}.HEIC`,
+    kind: 'photo' as const,
+    capturedAt: Date.UTC(2026, 6, 4),
+  }));
+}
+
+const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+beforeEach(() => {
+  native.uploads = [];
+  native.listeners.clear();
+  native.gates.clear();
+  native.hangFor.clear();
+  native.cancelled = [];
+  native.peakConcurrency = 0;
+  native.inFlight = 0;
+  native.dedup.clear();
+  native.cancelHooks.clear();
+  ledger.sent.clear();
+  for (const key of Object.keys(sizes)) delete sizes[key];
+});
+
+describe('Transfer', () => {
+  it('sends everything and records what landed', async () => {
+    const { Transfer } = await import('../uploader');
+    const transfer = new Transfer({ receiver, onChange: () => {} });
+
+    const result = await transfer.run(summaries(12));
+
+    expect(result.phase).toBe('done');
+    expect(result.filesDone).toBe(12);
+    expect(result.bytesSent).toBe(12_000_000);
+    expect(ledger.sent.size).toBe(12);
+    // The measurement the gate is built from has to be a real elapsed time.
+    expect(result.transferMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('keeps the agreed number of streams in flight', async () => {
+    // Six to eight over one HTTP/2 connection is what saturates the link;
+    // more only makes the receiver's disk seek (AGENTS.md §3.2).
+    const { Transfer } = await import('../uploader');
+    const transfer = new Transfer({ receiver, concurrency: 4, onChange: () => {} });
+
+    await transfer.run(summaries(20));
+
+    expect(native.peakConcurrency).toBeLessThanOrEqual(4);
+    expect(native.peakConcurrency).toBeGreaterThan(1);
+  });
+
+  it('skips what the receiver already had, without counting it as an error', async () => {
+    const { Transfer } = await import('../uploader');
+    native.dedup.add('asset-0-1000000');
+
+    const result = await transfer(Transfer).run(summaries(3));
+
+    const skipped = result.items.filter((item) => item.state === 'skipped');
+    expect(skipped).toHaveLength(1);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it('resumes a paused file instead of sending it again', async () => {
+    const { Transfer } = await import('../uploader');
+    const engine = new Transfer({ receiver, concurrency: 1, onChange: () => {} });
+    native.hangFor.add('asset-0-1000000');
+
+    const finished = engine.run(summaries(1));
+    await tick();
+    await tick();
+
+    engine.pause();
+    await tick();
+
+    // Cancelling the in-flight request is what makes pause immediate; the
+    // upload URL is remembered so the next attempt asks for the offset.
+    expect(native.cancelled).toContain('asset-0-1000000');
+
+    native.hangFor.clear();
+    engine.resume();
+    const result = await finished;
+
+    expect(result.phase).toBe('done');
+    expect(native.uploads).toHaveLength(2);
+    expect(native.uploads[0]?.location).toBeUndefined();
+    expect(native.uploads[1]?.location).toBe(
+      'https://receiver.test:47891/v1/files/asset-0-1000000',
+    );
+  });
+
+  it('reports an unreadable asset and sends the rest', async () => {
+    // One photo stuck in iCloud must not end a transfer of four hundred.
+    const { Transfer } = await import('../uploader');
+    const engine = new Transfer({ receiver, onChange: () => {} });
+
+    const result = await engine.run([
+      { id: 'in-icloud', filename: 'IMG_1.HEIC', kind: 'photo' as const },
+      ...summaries(2),
+    ]);
+
+    expect(result.filesTotal).toBe(2);
+    expect(result.errors.join(' ')).toContain('iCloud');
+    expect(result.phase).toBe('done');
+  });
+
+  it('measures the library and the network separately', async () => {
+    // A transfer rate that looks excellent next to a much lower wall-clock
+    // rate is the signature of the export being the bottleneck, which is what
+    // AGENTS.md §5 says to go after first.
+    const { Transfer } = await import('../uploader');
+    const result = await transfer(Transfer).run(summaries(4));
+
+    expect(result.prepareMs).toBeGreaterThanOrEqual(0);
+    expect(result.transferMs).toBeGreaterThanOrEqual(0);
+  });
+});
+
+function transfer(Transfer: typeof import('../uploader').Transfer) {
+  return new Transfer({ receiver, onChange: () => {} });
+}
