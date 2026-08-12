@@ -156,3 +156,16 @@ machine with Docker rather than requiring two physical subnets.
 The script also runs the reverse case: with the unicast sweep switched off and
 mDNS and broadcast switched on, the peer must **not** be found. Without that
 control a passing gate would only prove two containers can see each other.
+
+## 2026-08-12 — The gate harness uses RFC 5737 ranges, and refuses to collide
+The first version of the cross-subnet harness used the 192.168.11.0/24 and
+192.168.12.0/24 addresses `docs/PLAN.md` uses to describe the gate. Those are
+ordinary home-router ranges: on a machine whose own LAN is 192.168.11.0/24, the
+Docker bridge took over the host's route to it and the developer lost their LAN
+and their internet for as long as the network existed.
+
+The harness now uses TEST-NET-2 and TEST-NET-3 (198.51.100.0/24 and
+203.0.113.0/24), which are reserved for documentation and never appear on a
+real network. `scripts/verify-p2.sh` also refuses to start when either subnet
+overlaps an address on the host, because any hardcoded choice can be wrong on
+somebody's machine, and finding out by losing connectivity is expensive.
