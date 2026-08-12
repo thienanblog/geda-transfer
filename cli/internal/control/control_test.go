@@ -1,0 +1,254 @@
+// Copyright 2026 Geda
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package control
+
+import (
+	"context"
+	"errors"
+	"io/fs"
+	"net"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+type fakeBackend struct {
+	offerTTL   time.Duration
+	unpaired   string
+	unpairErr  error
+	statusErr  error
+	deviceList []Device
+}
+
+func (f *fakeBackend) Status(context.Context) (Status, error) {
+	if f.statusErr != nil {
+		return Status{}, f.statusErr
+	}
+	return Status{Version: "test", DeviceID: "receiver-1", Name: "NAS"}, nil
+}
+
+func (f *fakeBackend) Pair(_ context.Context, ttl time.Duration) (Offer, error) {
+	f.offerTTL = ttl
+	return Offer{URI: "geda://pair/abc", Fingerprint: "AAAA · BBBB · CCCC · DDDD"}, nil
+}
+
+func (f *fakeBackend) Devices(context.Context) ([]Device, error) { return f.deviceList, nil }
+
+func (f *fakeBackend) Unpair(_ context.Context, id string) error {
+	f.unpaired = id
+	return f.unpairErr
+}
+
+// socketPath keeps the path short: sun_path is about a hundred characters, and
+// t.TempDir() on macOS is already most of that.
+func socketPath(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "gedad")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return filepath.Join(dir, "s")
+}
+
+func serve(t *testing.T, b Backend) *Client {
+	t.Helper()
+	path := socketPath(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Serve(ctx, path, b) }()
+
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("Serve: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("Serve did not return after cancellation")
+		}
+	})
+
+	client := Dial(path)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := client.Status(ctx); err == nil || !errors.Is(err, ErrNotRunning) {
+			return client
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("control socket never came up")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestRoundTrip(t *testing.T) {
+	last := time.Now().UTC().Truncate(time.Second)
+	backend := &fakeBackend{deviceList: []Device{
+		{ID: "phone-1", Name: "iPhone", Platform: "ios", Files: 3, Bytes: 99, LastSeenAt: &last},
+	}}
+	client := serve(t, backend)
+	ctx := context.Background()
+
+	status, err := client.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.DeviceID != "receiver-1" {
+		t.Errorf("device id = %q", status.DeviceID)
+	}
+
+	offer, err := client.Pair(ctx, 90*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if offer.URI != "geda://pair/abc" {
+		t.Errorf("uri = %q", offer.URI)
+	}
+	if backend.offerTTL != 90*time.Second {
+		t.Errorf("ttl reached the daemon as %s, want 90s", backend.offerTTL)
+	}
+
+	devices, err := client.Devices(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(devices) != 1 || devices[0].ID != "phone-1" {
+		t.Fatalf("devices = %+v", devices)
+	}
+	if devices[0].LastSeenAt == nil || !devices[0].LastSeenAt.Equal(last) {
+		t.Errorf("last seen did not survive the round trip: %+v", devices[0].LastSeenAt)
+	}
+
+	if err := client.Unpair(ctx, "phone-1"); err != nil {
+		t.Fatal(err)
+	}
+	if backend.unpaired != "phone-1" {
+		t.Errorf("unpaired %q", backend.unpaired)
+	}
+}
+
+func TestBackendErrorReachesTheCaller(t *testing.T) {
+	client := serve(t, &fakeBackend{statusErr: errors.New("ledger is unreadable")})
+
+	_, err := client.Status(context.Background())
+	if err == nil || err.Error() != "ledger is unreadable" {
+		t.Fatalf("err = %v, want the backend's message", err)
+	}
+}
+
+func TestUnpairRequiresADeviceID(t *testing.T) {
+	client := serve(t, &fakeBackend{})
+	if err := client.Unpair(context.Background(), ""); err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
+func TestNotRunningIsDistinguishable(t *testing.T) {
+	// The message a user gets when they run `gedad pair` before starting the
+	// daemon; anything vaguer sends them looking for a network problem.
+	client := Dial(socketPath(t))
+
+	_, err := client.Status(context.Background())
+	if !errors.Is(err, ErrNotRunning) {
+		t.Fatalf("err = %v, want ErrNotRunning", err)
+	}
+}
+
+// The socket is the whole authorisation boundary for pairing: anyone who can
+// write to it can issue a pairing offer.
+func TestSocketIsPrivate(t *testing.T) {
+	path := socketPath(t)
+	ln, err := Listen(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("socket mode is %o, want 600", perm)
+	}
+}
+
+func TestSecondDaemonIsRefused(t *testing.T) {
+	path := socketPath(t)
+	ln, err := Listen(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	// Two daemons on one state directory would both answer pairing requests
+	// and both write the ledger.
+	if _, err := Listen(path); err == nil {
+		t.Fatal("a second daemon must not be able to bind the same socket")
+	}
+}
+
+func TestStaleSocketIsReplaced(t *testing.T) {
+	path := socketPath(t)
+
+	// What a crash leaves behind: the file exists, nothing is behind it.
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln.(*net.UnixListener).SetUnlinkOnClose(false)
+	ln.Close()
+
+	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+		t.Skip("this platform removed the socket file on close")
+	}
+
+	replacement, err := Listen(path)
+	if err != nil {
+		t.Fatalf("a stale socket must not block a restart: %v", err)
+	}
+	replacement.Close()
+}
+
+func TestServeRemovesTheSocketOnShutdown(t *testing.T) {
+	path := socketPath(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Serve(ctx, path, &fakeBackend{}) }()
+
+	client := Dial(path)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := client.Status(ctx); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("control socket never came up")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("socket still present after shutdown: %v", err)
+	}
+}

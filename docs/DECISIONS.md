@@ -169,3 +169,61 @@ The harness now uses TEST-NET-2 and TEST-NET-3 (198.51.100.0/24 and
 real network. `scripts/verify-p2.sh` also refuses to start when either subnet
 overlaps an address on the host, because any hardcoded choice can be wrong on
 somebody's machine, and finding out by losing connectivity is expensive.
+
+## 2026-08-12 — gedad is configured by a plain `key = value` file, not YAML/TOML
+The daemon is edited over SSH on a NAS, in whatever editor the box has, and
+configured in Docker through environment variables. One flat namespace maps to
+both without the user learning a second syntax: every key is also
+`GEDA_<KEY>` and `-set key=value`. A structured format would have bought
+nesting nobody needs and a dependency the CLI does not otherwise have.
+
+Unknown keys are a **hard error**. A silently ignored `destination =` leaves
+the destination at its default, and that is discovered days later with the
+files in the wrong place.
+
+## 2026-08-12 — Pairing on a headless box goes through a Unix control socket
+Pairing offers live only in the memory of the running receiver, so `gedad pair`
+cannot be a second process that reads the ledger — it has to ask the daemon.
+The socket is in the state directory, 0600, owned by the daemon's user, and
+that file permission is the whole authorisation boundary: reaching it means
+being that user or root on that machine.
+
+Rejected: an admin endpoint on the TLS port. Anyone who can reach the receiver
+could then ask it for a pairing offer, which defeats a QR code whose entire
+security property is that it requires physical presence.
+
+## 2026-08-12 — The terminal QR code sets its own colours and checks the width
+A QR code needs dark modules on a light background. Drawn in the terminal's own
+palette it comes out inverted on the dark themes most people use, and many
+scanners will not invert — so foreground, background, and the quiet zone are
+all set explicitly. Modules are one character wide and half a character tall,
+because terminal cells are about twice as tall as they are wide.
+
+The code is also measured against the window before it is drawn: a QR code
+wider than the terminal wraps, and a wrapped code cannot be scanned at all.
+Too narrow prints the URI instead of a picture that will never work.
+
+## 2026-08-12 — A bridged container must be told what to advertise
+The daemon advertises every local interface address, which is right on a host
+network and useless on a bridge: the only address it can see is a private
+bridge address nothing outside can dial. So `advertise` exists, the Docker
+compose file defaults to `network_mode: host`, and the bridged example sets
+`GEDA_ADVERTISE` explicitly. Getting this wrong is invisible until after
+pairing succeeds and no file ever transfers.
+
+## 2026-08-12 — Naming templates are validated before they are stored
+`{yyy}` renders literally rather than failing, so a typo would name every file
+after the typo and nobody would notice until the photos were filed under it.
+`naming.Validate` rejects unknown variables and unclosed braces, and renders
+the template twice: once with everything present, once with only the original
+filename — because a screenshot has no album and a file from the Files app has
+no capture date, and a template built from those alone renders to nothing for
+exactly the assets whose absence is hardest to spot.
+
+## 2026-08-12 — The P3 gate runs the shipped image, not a test harness
+The receiver in `test/nas/compose.yml` is `docker/Dockerfile` as published:
+same entrypoint, same unprivileged user, no test code inside it. The client is
+curl and openssl on a second Docker network, so every packet is routed, and the
+script asserts the route is indirect before trusting anything else. It also
+recomputes the SPKI pin from the served certificate with openssl — the same
+check the phone makes — so the gate covers the pin, not only the upload.

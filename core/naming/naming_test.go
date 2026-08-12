@@ -15,6 +15,7 @@
 package naming_test
 
 import (
+	"errors"
 	"path"
 	"strings"
 	"testing"
@@ -328,6 +329,69 @@ func TestResultPathRoundTrip(t *testing.T) {
 	for i, r := range cases {
 		if got := r.Path(); got != want[i] {
 			t.Errorf("Path() = %q, want %q", got, want[i])
+		}
+	}
+}
+
+func TestValidate(t *testing.T) {
+	valid := []string{
+		naming.Default,
+		"{yyyy}/{MM}/{original_name}.{ext}",
+		"{device}_{hash8}_{counter}.{ext}",
+		"photos/fixed-name.{ext}",
+	}
+	for _, tmpl := range valid {
+		if err := naming.Validate(tmpl); err != nil {
+			t.Errorf("Validate(%q) = %v, want nil", tmpl, err)
+		}
+	}
+
+	invalid := map[string]string{
+		"empty":            "",
+		"whitespace only":  "   ",
+		"unclosed brace":   "{yyyy",
+		"misspelled":       "{yyy}-{original_name}.{ext}",
+		"unknown variable": "{camera}/{original_name}.{ext}",
+		// Renders to nothing for a screenshot, which has no album -- the
+		// files most likely to go missing quietly.
+		"empty for some files": "{album}",
+	}
+	for name, tmpl := range invalid {
+		t.Run(name, func(t *testing.T) {
+			err := naming.Validate(tmpl)
+			if err == nil {
+				t.Fatalf("Validate(%q) = nil, want an error", tmpl)
+			}
+			if !errors.Is(err, naming.ErrBadTemplate) {
+				t.Errorf("err = %v, want ErrBadTemplate", err)
+			}
+		})
+	}
+}
+
+// Every variable the documentation promises must actually substitute; a
+// variable listed but not replaced would render literally into filenames.
+func TestEveryDocumentedVariableIsSubstituted(t *testing.T) {
+	for _, v := range naming.Variables {
+		if v == "counter" {
+			// {counter} is empty unless there is a collision, which is what
+			// TestCounter covers.
+			continue
+		}
+		tmpl := "{" + v + "}.jpg"
+		res, err := naming.Render(tmpl, naming.Vars{
+			CapturedAt:   time.Date(2026, 7, 4, 15, 9, 3, 0, time.UTC),
+			OriginalName: "IMG_0001.HEIC",
+			Device:       "iPhone",
+			Album:        "Recents",
+			Hash:         "0123456789abcdef",
+		}, 0)
+		if err != nil {
+			t.Errorf("Render(%q): %v", tmpl, err)
+			continue
+		}
+		if strings.Contains(res.Base, "{") {
+			t.Errorf("Render(%q) left the variable unsubstituted: %q", tmpl, res.Base)
 		}
 	}
 }

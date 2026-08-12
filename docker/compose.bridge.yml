@@ -1,0 +1,50 @@
+# Copyright 2026 Geda
+# SPDX-License-Identifier: Apache-2.0
+#
+# The bridged alternative, for hosts where network_mode: host is unavailable
+# (Docker Desktop on macOS and Windows, and some NAS UIs that do not expose
+# it).
+#
+# Read this before using it: on a bridge network the container sees only a
+# private address like 172.17.0.3, which nothing on your LAN can dial, and
+# broadcast and multicast do not leave the bridge. So:
+#
+#   * GEDA_ADVERTISE must be set to the host's LAN address by hand. Without it
+#     every phone is handed an address that cannot be reached, and pairing
+#     appears to succeed and then nothing transfers.
+#   * Discovery will not find this receiver by itself. Pairing by QR code still
+#     works, and paired phones reach it through the advertised address.
+#
+# Host networking avoids both problems, which is why it is the default.
+
+services:
+  gedad:
+    image: geda/gedad:latest
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: gedad
+    restart: unless-stopped
+
+    ports:
+      - "47891:47891/tcp"
+      - "47890:47890/udp"
+
+    volumes:
+      - /srv/photos:/data
+      - gedad-state:/state
+
+    environment:
+      GEDA_NAME: "Living Room NAS"
+      # The host's LAN address, and a VPN address too if there is one. There
+      # is no way for the container to work this out for itself.
+      GEDA_ADVERTISE: "192.168.1.10"
+      # Set this if the published port differs from the one inside.
+      # GEDA_ADVERTISE_PORT: "47891"
+      # Multicast does not cross the bridge, so the mDNS responder would only
+      # ever talk to itself.
+      GEDA_MDNS: "false"
+      TZ: "UTC"
+
+volumes:
+  gedad-state:
