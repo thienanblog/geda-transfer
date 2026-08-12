@@ -42,6 +42,16 @@ WireGuard without any manual configuration.
 | Linux / NAS (CLI + Docker) | v1 |
 | Android | after v1 |
 
+## Running on a NAS
+
+```
+docker compose -f docker/compose.yml up -d
+docker compose -f docker/compose.yml exec gedad gedad pair
+```
+
+The second command draws a pairing QR code in your terminal. There is also a
+plain `gedad` binary with a systemd unit — see [cli/README.md](cli/README.md).
+
 ## Building
 
 See [AGENTS.md](AGENTS.md) for architecture and [docs/PLAN.md](docs/PLAN.md)

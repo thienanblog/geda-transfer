@@ -28,6 +28,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -93,6 +94,73 @@ func (r Result) Path() string {
 		return name
 	}
 	return r.Dir + "/" + name
+}
+
+// Variables are the template variables, in the order the documentation lists
+// them (AGENTS.md §3.6).
+var Variables = []string{
+	"yyyy", "MM", "dd", "HH", "mm", "ss",
+	"original_name", "device", "album", "counter", "hash8", "ext",
+}
+
+// ErrBadTemplate reports a template that cannot be used.
+var ErrBadTemplate = errors.New("unusable filename template")
+
+// Validate reports whether a template is usable before anything depends on it.
+//
+// It exists because the alternative is finding out at the first upload: a
+// misspelled {yyy} renders literally, so every file would be named "yyy" and
+// nobody would notice until the photos were already filed under it. A settings
+// screen and a config file both call this before storing what the user typed.
+func Validate(tmpl string) error {
+	if strings.TrimSpace(tmpl) == "" {
+		return fmt.Errorf("%w: it is empty", ErrBadTemplate)
+	}
+
+	for rest := tmpl; ; {
+		open := strings.IndexByte(rest, '{')
+		if open < 0 {
+			break
+		}
+		rest = rest[open+1:]
+
+		end := strings.IndexByte(rest, '}')
+		// A brace that never closes is a typo, not a literal: taking it
+		// literally would put a "{" in every filename, which Windows refuses
+		// outright.
+		if end < 0 {
+			return fmt.Errorf("%w: unclosed { in %q", ErrBadTemplate, tmpl)
+		}
+
+		name := rest[:end]
+		rest = rest[end+1:]
+		if !slices.Contains(Variables, name) {
+			return fmt.Errorf("%w: unknown variable {%s} (known: {%s})",
+				ErrBadTemplate, name, strings.Join(Variables, "}, {"))
+		}
+	}
+
+	// Rendering is the final check, and it runs twice. The second file is the
+	// one that matters: a screenshot has no album, a file sent from the Files
+	// app has no capture date, and a template built only from those renders
+	// to nothing for exactly the assets the user will not notice missing.
+	// Only original_name is guaranteed to be there.
+	samples := []Vars{
+		{
+			CapturedAt:   time.Date(2026, 7, 4, 15, 9, 3, 0, time.UTC),
+			OriginalName: "IMG_0001.HEIC",
+			Device:       "iPhone",
+			Album:        "Recents",
+			Hash:         "0123456789abcdef",
+		},
+		{OriginalName: "IMG_0001.HEIC", Hash: "0123456789abcdef"},
+	}
+	for _, vars := range samples {
+		if _, err := Render(tmpl, vars, 0); err != nil {
+			return fmt.Errorf("%w: %v", ErrBadTemplate, err)
+		}
+	}
+	return nil
 }
 
 // Render substitutes vars into tmpl.

@@ -1,0 +1,14 @@
+# Copyright 2026 Geda
+# SPDX-License-Identifier: Apache-2.0
+#
+# Keep the build context to the Go sources the image actually compiles.
+
+.git
+.github
+desktop
+mobile
+docs
+test
+scripts
+*.md
+**/node_modules

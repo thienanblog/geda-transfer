@@ -1,0 +1,65 @@
+# Copyright 2026 Geda
+# SPDX-License-Identifier: Apache-2.0
+#
+# The P3 gate: the product container receives an upload from a client on
+# another subnet.
+#
+# Two Docker networks, no shared broadcast domain. Packets from the client to
+# the receiver are routed by the host kernel -- which is what makes this a
+# different subnet rather than a different address on the same wire. The
+# script asserts that the route is indirect before it trusts anything else.
+#
+# The addresses are RFC 5737 documentation ranges (TEST-NET-2 and TEST-NET-3),
+# for the same reason as the P2 harness: a Docker bridge that overlaps a
+# network the host is really on steals the host's route to it, and the
+# developer loses their LAN. scripts/verify-p3.sh refuses to run if these
+# overlap an address on this machine.
+
+name: geda-p3-gate
+
+networks:
+  client-net:
+    ipam:
+      config:
+        - subnet: 198.51.100.0/24
+  nas-net:
+    ipam:
+      config:
+        - subnet: 203.0.113.0/24
+
+services:
+  # The receiver, running the real product image exactly as shipped: same
+  # entrypoint, same unprivileged user, no test harness inside it.
+  gedad:
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile
+    image: geda/gedad:gate
+    networks:
+      nas-net:
+        ipv4_address: 203.0.113.30
+    environment:
+      GEDA_NAME: "Gate NAS"
+      # The bridged-container case from docker/compose.bridge.yml: the only
+      # address the container can see is its own bridge address, so the
+      # address peers should dial is configured explicitly.
+      GEDA_ADVERTISE: "203.0.113.30"
+      GEDA_MDNS: "false"
+    volumes:
+      - state:/state
+      - data:/data
+
+  # Stands in for a phone on another network. It gets nothing but curl and
+  # openssl: everything it does, a mobile client can do.
+  client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    networks:
+      client-net:
+        ipv4_address: 198.51.100.20
+    command: ["sleep", "infinity"]
+
+volumes:
+  state:
+  data:

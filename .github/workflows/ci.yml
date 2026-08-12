@@ -43,6 +43,51 @@ jobs:
       # actually checked, so it runs everywhere rather than on one platform.
       - run: go test -race -count=1 ./...
 
+  cli:
+    name: cli (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    defaults:
+      run:
+        working-directory: cli
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: cli/go.mod
+          cache-dependency-path: cli/go.sum
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "Not gofmt'd:"; echo "$unformatted"; exit 1
+          fi
+
+      - run: go vet ./...
+
+      - run: go build ./...
+
+      # Windows is not in the matrix: gedad is the headless daemon for NAS and
+      # Linux boxes, and its control socket is a Unix socket. Windows users get
+      # the desktop app, which is built in P6.
+      - run: go test -race -count=1 ./...
+
+      # The daemon has to build for every machine the Docker image and the
+      # packaged binaries target, from one host and with no cgo toolchain.
+      - name: build all targets
+        if: runner.os == 'Linux'
+        run: |
+          set -e
+          for target in linux/amd64 linux/arm64 darwin/arm64; do
+            echo "==> $target"
+            CGO_ENABLED=0 GOOS=${target%/*} GOARCH=${target#*/} go build ./...
+          done
+
   cross-compile:
     name: cross-compile
     runs-on: ubuntu-latest
@@ -84,6 +129,10 @@ jobs:
       # P2 needs two subnets and a router between them, which is why this one
       # runs in Docker rather than against loopback.
       - run: ./scripts/verify-p2.sh
+
+      # P3 runs the real product image, so this is also what proves the
+      # published Dockerfile builds and works.
+      - run: ./scripts/verify-p3.sh
 
   licence:
     name: licence headers

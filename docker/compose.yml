@@ -1,0 +1,49 @@
+# Copyright 2026 Geda
+# SPDX-License-Identifier: Apache-2.0
+#
+# A receiver on a NAS. Start it, then pair a phone:
+#
+#   docker compose up -d
+#   docker compose exec gedad gedad pair
+#
+# The QR code is drawn in the terminal. If the window is too narrow the command
+# says so and prints the URI to type in instead.
+
+services:
+  gedad:
+    image: geda/gedad:latest
+    # Built from this checkout, because there is no published image yet.
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: gedad
+    restart: unless-stopped
+
+    # Host networking is the right default. Discovery is broadcast, multicast,
+    # and a unicast sweep of the local network; a bridge network hides all
+    # three behind NAT, so phones would only ever find this receiver by
+    # scanning its QR code. Host networking also means the addresses the
+    # daemon advertises are the addresses phones can actually dial.
+    network_mode: host
+
+    volumes:
+      # Where the photos land. Point this at your share.
+      - /srv/photos:/data
+      # The ledger and the TLS identity. This one must be persistent: a
+      # receiver that loses its identity key looks like a different machine to
+      # every paired phone, and every one of them has to pair again.
+      - gedad-state:/state
+
+    environment:
+      GEDA_NAME: "Living Room NAS"
+      # GEDA_NAMING_TEMPLATE: "{yyyy}/{MM}/{yyyy}-{MM}-{dd}_{HH}{mm}{ss}_{original_name}.{ext}"
+      # GEDA_LOG_LEVEL: info
+      TZ: "UTC"
+
+    # The uid the image runs as owns /state and /data inside the container. A
+    # bind mount arrives with the host's ownership instead, so either chown the
+    # directory to 1000:1000 or set this to the owner it already has.
+    # user: "1000:1000"
+
+volumes:
+  gedad-state:

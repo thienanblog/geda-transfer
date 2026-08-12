@@ -1,0 +1,9 @@
+# Copyright 2026 Geda
+# SPDX-License-Identifier: Apache-2.0
+#
+# The client side of the P3 gate. curl speaks tus, and openssl computes the
+# SPKI pin the same way a phone does -- so the gate proves the pin a scanned
+# QR code carries really is the key the receiver serves.
+
+FROM alpine:3.21
+RUN apk add --no-cache curl openssl

@@ -26,6 +26,14 @@ filter one and not the other:
 
 Ports are configurable. The defaults are what discovery assumes.
 
+There are **no administrative endpoints on these ports**. Issuing a pairing
+offer, listing devices, and revoking one are local operations only: on a
+headless receiver they go through a Unix socket in the state directory
+(`cli/README.md`), and on the desktop through the app itself. A receiver that
+would hand out a pairing offer to anyone who can reach it over the network
+would defeat the property that makes the QR code trustworthy — that getting one
+requires being in front of the machine.
+
 ---
 
 ## 2. Discovery

@@ -1,0 +1,72 @@
+# Copyright 2026 Geda
+# SPDX-License-Identifier: Apache-2.0
+#
+# systemd unit for the headless receiver.
+#
+#   sudo useradd --system --home /var/lib/geda --shell /usr/sbin/nologin geda
+#   sudo install -m0755 gedad /usr/local/bin/gedad
+#   sudo install -D -m0644 gedad.conf /etc/geda/gedad.conf
+#   sudo install -D -m0644 gedad.service /etc/systemd/system/gedad.service
+#   sudo systemctl enable --now gedad
+#
+# Then pair a phone:
+#
+#   sudo -u geda gedad pair
+
+[Unit]
+Description=Geda Transfer receiver
+Documentation=https://github.com/geda/geda-transfer
+# Discovery enumerates interface addresses at startup, so waiting for the
+# network to be configured is not cosmetic: starting first would advertise an
+# address set that does not yet include the real one.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/gedad run -config /etc/geda/gedad.conf
+User=geda
+Group=geda
+
+# Creates and owns /var/lib/geda, and keeps it across updates. The TLS
+# identity lives there; losing it makes every paired phone fail with a pin
+# mismatch (AGENTS.md 3.5).
+StateDirectory=geda
+StateDirectoryMode=0700
+
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+
+# The daemon needs no privileges: it binds ports above 1024, and it only ever
+# writes its state directory and the destination.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+UMask=0077
+
+# ProtectSystem=strict makes the whole filesystem read-only apart from the
+# state directory, so the destination has to be granted explicitly. Set this
+# to whatever `dest` is in gedad.conf; the default destination lives inside
+# the state directory and needs nothing here.
+#ReadWritePaths=/srv/photos
+
+# ProtectHome is deliberately not set: on a home server the destination is
+# very often somewhere under /home, and a unit that silently could not write
+# there would look like a broken transfer rather than a hardening setting.
+
+[Install]
+WantedBy=multi-user.target
