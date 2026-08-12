@@ -87,6 +87,26 @@ candidates, ordered most-recently-successful first.
 
 ---
 
+### 2.4 `GET /v1/info`
+
+Unauthenticated, because a client needs it to decide whether it is talking to
+the receiver it paired with before it has a session.
+
+```json
+{
+  "versions": [1],
+  "device_id": "<uuid>",
+  "name": "Studio Mac",
+  "spki": "<base64 SHA-256 of SPKI>"
+}
+```
+
+The `spki` field is a convenience for display and diagnostics only. **It is not
+what establishes trust** -- the pin recorded at pairing time is, and it is
+checked during the TLS handshake, before this response can be read.
+
+---
+
 ## 3. Pairing
 
 ### 3.1 QR payload
@@ -241,6 +261,11 @@ base64-encoded per tus:
 | `pair_role` | `primary` \| `secondary` |
 | `kind` | `photo` \| `video` \| `file` |
 
+Two further keys, `device_id` and `device_name`, appear on stored uploads.
+They are **set by the receiver from the authenticated token** and any values a
+client sends are discarded. Trusting the client here would let one device file
+its uploads under another device's identity.
+
 **`pair_id` is mandatory for Live Photos (HEIC+MOV) and RAW+JPEG pairs.** The
 receiver allocates the collision counter once per `pair_id`, never per file.
 Getting this wrong silently breaks Live Photos.
@@ -305,6 +330,17 @@ On the final `PATCH`, the receiver verifies the full BLAKE3 against `hash`.
   response carries the final stored path.
 - Mismatch → the upload is discarded and `460 Checksum Mismatch` is returned.
   The client retries once, then reports the file as failed.
+
+The final `PATCH` response carries:
+
+| Header | Meaning |
+|---|---|
+| `Geda-Stored-Path` | Destination-relative path, **base64 of UTF-8**. HTTP headers are Latin-1 by specification, so a path containing any non-ASCII character cannot be sent raw. |
+| `Geda-Deduplicated` | `1` when identical content was already held. `Geda-Stored-Path` then points at the existing copy and nothing was written. |
+
+`hash` in `Upload-Metadata` is optional. When absent the receiver still computes
+the digest and records it, but has nothing to verify against -- so a client that
+intends to delete its local copy **must** send it.
 
 **A file is only eligible for delete-after-transfer once the receiver has
 confirmed a full-hash match.** No exceptions.

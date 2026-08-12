@@ -1,6 +1,6 @@
 module github.com/geda/geda-transfer/core
 
-go 1.25.0
+go 1.25.8
 
 require (
 	lukechampine.com/blake3 v1.4.1
@@ -14,6 +14,8 @@ require (
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	github.com/tus/tusd/v2 v2.10.0 // indirect
+	golang.org/x/exp v0.0.0-20250106191152-7588d65b2ba8 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	modernc.org/libc v1.74.4 // indirect
 	modernc.org/mathutil v1.7.1 // indirect

@@ -68,3 +68,29 @@ receiver and so cannot be performed remotely by an attacker.
 either member of a Live Photo pair may arrive first. Requiring the client to
 send the primary first was rejected: background `URLSession` schedules tasks at
 the OS's discretion and will not honour client ordering.
+
+## 2026-08-12 — Uploads are hashed while they are written, not afterwards
+The receiver folds each chunk into a BLAKE3 hasher as it lands, so the common
+case of a single streamed PATCH needs no second pass. A resume that this
+process has no hasher state for falls back to reading the finished file. On a
+NAS the difference is a full extra read of every received video.
+
+## 2026-08-12 — The upload's owning device comes from the token, not metadata
+tus metadata is client-supplied. `device_id` and `device_name` are overwritten
+from the authenticated session in PreUploadCreateCallback, otherwise any paired
+device could file uploads under another device's identity.
+
+## 2026-08-12 — The dedup probe is scoped to the requesting device
+Each device has its own destination folder and its own history. A global probe
+would let one phone's library suppress another phone's uploads.
+
+## 2026-08-12 — Destination names are claimed with O_EXCL before the rename
+A rename would silently replace a file the user placed in the destination
+themselves, which the ledger knows nothing about. Claiming the name first turns
+that into an ordinary collision and the file gets a counter instead.
+
+## 2026-08-12 — tusd's logger is left at its default
+tusd v2.10 types Config.Logger as golang.org/x/exp/slog.Logger, which is a
+distinct type from the standard library's log/slog.Logger. Taking x/exp as a
+direct dependency to satisfy one field is a worse trade than letting tusd log
+through its own default.
