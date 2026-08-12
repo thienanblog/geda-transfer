@@ -32,6 +32,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -39,6 +40,7 @@ import (
 	tus "github.com/tus/tusd/v2/pkg/handler"
 
 	"github.com/geda/geda-transfer/core/identity"
+	"github.com/geda/geda-transfer/core/pairing"
 	"github.com/geda/geda-transfer/core/storage"
 	"github.com/geda/geda-transfer/core/store"
 )
@@ -71,6 +73,17 @@ type Config struct {
 	// Identity supplies the TLS certificate and the pinned public key.
 	Identity *identity.Identity
 
+	// TransferPort is the TCP port clients reach this receiver on. It is
+	// advertised in pairing offers, so it must be the port users can actually
+	// dial rather than whatever ephemeral port a test listener took. Defaults
+	// to discovery.DefaultTransferPort.
+	TransferPort int
+
+	// Addrs overrides the advertised candidate set. Empty means "every local
+	// interface address", which is what production wants; tests and unusual
+	// deployments (a container behind a published port) set it explicitly.
+	Addrs []string
+
 	// Logger receives operational messages. Defaults to slog.Default().
 	Logger *slog.Logger
 }
@@ -83,6 +96,8 @@ type Server struct {
 	tus     *tus.Handler
 	mux     *http.ServeMux
 	http    *http.Server
+
+	offers *pairing.Offers
 
 	seenMu   sync.Mutex
 	lastSeen map[string]time.Time
@@ -110,6 +125,7 @@ func New(cfg Config) (*Server, error) {
 		cfg:      cfg,
 		log:      log,
 		uploads:  newUploadStore(cfg.Files),
+		offers:   pairing.NewOffers(nil),
 		lastSeen: make(map[string]time.Time),
 	}
 
@@ -140,6 +156,9 @@ func New(cfg Config) (*Server, error) {
 
 	s.mux = http.NewServeMux()
 	s.mux.HandleFunc("GET /v1/info", s.handleInfo)
+	// Pairing carries its own authorisation -- the single-use PSK from the QR
+	// code -- because a device that has no token yet is the entire point.
+	s.mux.HandleFunc("POST /v1/pair", s.handlePair)
 	s.mux.Handle("POST /v1/have", s.authenticated(http.HandlerFunc(s.handleHave)))
 	s.mux.Handle(UploadPath, s.authenticated(http.StripPrefix(strings.TrimSuffix(UploadPath, "/"), handler)))
 
@@ -483,4 +502,16 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(body)
+}
+
+// joinHostPort formats an address for dialling, bracketing IPv6.
+func joinHostPort(host string, port int) string {
+	return net.JoinHostPort(host, strconv.Itoa(port))
+}
+
+// forgetDevice drops cached state for a device that is no longer paired.
+func (s *Server) forgetDevice(deviceID string) {
+	s.seenMu.Lock()
+	defer s.seenMu.Unlock()
+	delete(s.lastSeen, deviceID)
 }

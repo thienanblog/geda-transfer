@@ -14,7 +14,15 @@ custom binary protocol.
 |---|---|---|
 | Discovery probe/response | 47890 | UDP (unicast, broadcast, multicast) |
 | Transfer + control | 47891 | TCP, HTTP/2 over TLS 1.3 |
-| mDNS service | — | `_gedatransfer._tcp` on 47891 |
+| mDNS service | 5353 | `_gedatransfer._tcp` on 47891 |
+
+Discovery multicast groups, used alongside broadcast because some segments
+filter one and not the other:
+
+| Family | Group |
+|---|---|
+| IPv4 | `239.192.71.90` (organisation-local scope) |
+| IPv6 | `ff12::7a90` |
 
 Ports are configurable. The defaults are what discovery assumes.
 
@@ -67,9 +75,18 @@ every 30s to the local broadcast address.
 `utun*`/`wg*` VPN addresses. This is what makes cross-subnet reconnection work
 (AGENTS.md §3.4). Loopback and link-local are excluded.
 
+`paired` reports that the receiver has at least one paired device. It is a UI
+hint and nothing more.
+
 `nonce` echo prevents off-path spoofing of announce packets. The client keeps
 sent nonces in a set with a 10-second TTL and discards any announce that does
-not match.
+not match. Unsolicited announces — the periodic broadcast, which quotes no
+nonce — are therefore ignored during a scan unless the client explicitly opts
+in to them.
+
+A probe set is sent **twice**, about 400ms apart. The first datagram to a host
+whose hardware address is not yet resolved is dropped while the stack resolves
+it, so a single round systematically misses hosts that are present.
 
 A receiver MUST rate-limit announces to **5 per second per source address**.
 
@@ -86,6 +103,18 @@ with the pinned SPKI; the rest are cancelled. Staggered start of 100ms between
 candidates, ordered most-recently-successful first.
 
 ---
+
+### 2.3.1 mDNS records (L1)
+
+The service is `_gedatransfer._tcp.local.` on the transfer port. The instance
+label is the receiver's display name plus the first 8 characters of its device
+id, which makes it unique without implementing RFC 6762 conflict probing.
+
+TXT keys: `v`, `id` (device id), `name`, `platform`, `spki`, and `paired=1`
+when applicable. Addresses come from the A/AAAA records of the SRV target.
+
+mDNS never leaves the local segment — multicast DNS is sent with TTL=1 and
+routers drop it. Cross-subnet discovery is L3/L4 and nothing else.
 
 ### 2.4 `GET /v1/info`
 
@@ -119,13 +148,19 @@ The receiver renders this as a QR code. Compact JSON, then base64url.
   "device_id": "<uuid>",
   "name": "Studio Mac",
   "spki": "<base64 SHA-256 of SPKI>",
-  "addrs": ["192.168.11.20", "10.13.13.5"],
-  "psk": "<32 random bytes, base64>",
+  "addrs": ["192.168.11.20:47891", "10.13.13.5:47891"],
+  "psk": "<32 random bytes, base64url>",
   "exp": 1786000000
 }
 ```
 
-`psk` is single-use and expires (`exp`, unix seconds, default +5 minutes).
+The QR encodes `geda://pair/<base64url of the compact JSON>`. `addrs` carries
+host:port so the client can dial without assuming a port.
+
+`psk` is single-use and expires (`exp`, unix seconds, default +5 minutes). It
+is held in memory on the receiver only: an offer that survived a restart would
+be a credential outstanding without the user knowing. Presenting a secret spends
+it, whether or not it turns out to be valid.
 
 ### 3.2 `POST /v1/pair`
 
@@ -135,17 +170,28 @@ and refuses any later certificate that does not match.
 Request:
 ```json
 { "v": 1, "psk": "...", "device_id": "<client uuid>",
-  "name": "An's iPhone", "platform": "ios" }
+  "name": "An's iPhone", "platform": "ios", "spki": "<optional>" }
 ```
+
+`spki` is reserved for mutual TLS. It is recorded and not yet checked, so that
+turning client certificates on later does not force everyone to re-pair.
 
 Response:
 ```json
 { "token": "<opaque bearer token>", "device_id": "<receiver uuid>",
-  "addrs": ["..."], "naming_template": "...", "max_concurrency": 8 }
+  "name": "Studio Mac", "spki": "<base64 SHA-256 of SPKI>",
+  "addrs": ["192.168.11.20:47891"], "naming_template": "...",
+  "max_concurrency": 8 }
 ```
 
+`addrs` in the response supersedes the set in the QR code: a tunnel may have
+come up since the code was rendered.
+
 All later requests carry `Authorization: Bearer <token>`. Tokens do not expire;
-they are revoked by unpairing on the receiver.
+they are revoked by unpairing on the receiver. Pairing a device that is already
+known re-arms the existing row — a new token, the old history — so a user who
+reinstalls the app does not lose their transfer record. The superseded token
+stops working immediately.
 
 ### 3.3 What "pinning the SPKI" means
 

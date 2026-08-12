@@ -94,3 +94,65 @@ tusd v2.10 types Config.Logger as golang.org/x/exp/slog.Logger, which is a
 distinct type from the standard library's log/slog.Logger. Taking x/exp as a
 direct dependency to satisfy one field is a worse trade than letting tusd log
 through its own default.
+
+## 2026-08-12 — Probes go to broadcast *and* multicast, on one fixed port
+Some segments filter directed broadcast, others filter organisation-local
+multicast, and which one is dropped is not knowable in advance. Sending both
+costs two extra datagrams per scan. Groups are `239.192.71.90` and `ff12::7a90`.
+
+## 2026-08-12 — A sweep sends every probe twice
+The first datagram to a host whose hardware address is not yet in the
+neighbour table is dropped while the stack resolves it. A single round
+therefore misses hosts that are present, in a way that looks like the peer
+being offline. Two rounds 400ms apart cost nothing and remove the failure.
+
+## 2026-08-12 — A sweep is capped at 4096 hosts and refuses larger ranges
+A /24 is 254 probes and finishes in about a second. A mistyped /8 would be
+sixteen million. Refusing beats silently truncating, which would look like
+discovery failing for hosts the user believes are in range.
+
+## 2026-08-12 — The mDNS instance name carries the device id
+RFC 6762 conflict probing exists to resolve two hosts claiming one name.
+Qualifying the label with the first 8 characters of the device id means the
+collision cannot arise, which is a great deal less code than implementing
+probing and defending it.
+
+## 2026-08-12 — Announces without a nonce are ignored during a scan
+The periodic broadcast announce quotes no nonce, so accepting it during a scan
+would reopen the off-path injection the echo closes. A client that wants to
+listen passively opts in explicitly.
+
+## 2026-08-12 — Candidate racing promotes the address that worked
+After a successful handshake the winning address moves to the front of the
+candidate set. Reconnecting then starts with the route known to be reachable
+rather than paying the 100ms stagger for candidates that are not — which is the
+usual case for a phone that stays on one network for weeks.
+
+## 2026-08-12 — The client pins with InsecureSkipVerify plus a verify callback
+Go offers no way to say "trust exactly this key". The CA and hostname checks are
+disabled and replaced by an equality check against the pinned SPKI, which is
+strictly stronger here: the certificate is self-signed and the receiver is
+reached by whichever of its addresses works today, so a name match would prove
+nothing.
+
+## 2026-08-12 — Pairing offers live in memory and are spent on presentation
+An offer that survived a restart would be a credential outstanding without the
+user knowing. Redeeming deletes the secret before checking its expiry, so a
+code that has been presented once cannot be presented again — including by
+whoever photographed the screen.
+
+## 2026-08-12 — Re-pairing updates the device row instead of replacing it
+The files table points at the device, and a user who reinstalls the app expects
+their history to still be there. Re-pairing issues a new token and revokes the
+old one; nothing else about the device changes.
+
+## 2026-08-12 — The P2 gate runs in Docker, with a negative control
+Two Docker networks joined by a routing container reproduce the property under
+test: the router forwards unicast and nothing else, so broadcast stops at the
+boundary and mDNS — multicast with TTL=1 — never leaves either segment. This is
+the same constraint a WireGuard tunnel imposes, and it is verifiable on any
+machine with Docker rather than requiring two physical subnets.
+
+The script also runs the reverse case: with the unicast sweep switched off and
+mDNS and broadcast switched on, the peer must **not** be found. Without that
+control a passing gate would only prove two containers can see each other.
