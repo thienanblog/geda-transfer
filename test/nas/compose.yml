@@ -4,10 +4,18 @@
 # The P3 gate: the product container receives an upload from a client on
 # another subnet.
 #
-# Two Docker networks, no shared broadcast domain. Packets from the client to
-# the receiver are routed by the host kernel -- which is what makes this a
-# different subnet rather than a different address on the same wire. The
-# script asserts that the route is indirect before it trusts anything else.
+# Two Docker networks with a routing container between them, the same shape as
+# the P2 harness. The router is not decoration: Docker Engine installs
+# DOCKER-ISOLATION rules that drop forwarding between two bridge networks, so
+# a client on one bridge cannot reach a receiver on the other however the
+# routing table is written. Every hop here is within one bridge -- client to
+# router, then router to receiver -- and the crossing happens inside the
+# router, which is what a home router or a VPN gateway does.
+#
+# The router also masquerades, so the receiver replies on-link to the router
+# rather than needing a route of its own. That keeps the receiver container
+# exactly as shipped: same image, same unprivileged user, same entrypoint, no
+# capabilities added and no test code inside it.
 #
 # The addresses are RFC 5737 documentation ranges (TEST-NET-2 and TEST-NET-3),
 # for the same reason as the P2 harness: a Docker bridge that overlaps a
@@ -28,6 +36,25 @@ networks:
         - subnet: 203.0.113.0/24
 
 services:
+  # The boundary between the two subnets.
+  router:
+    image: alpine:3.21
+    cap_add: [NET_ADMIN]
+    sysctls:
+      net.ipv4.ip_forward: 1
+    networks:
+      client-net:
+        ipv4_address: 198.51.100.2
+      nas-net:
+        ipv4_address: 203.0.113.2
+    command:
+      - /bin/sh
+      - -c
+      - |
+        apk add --no-cache iptables >/dev/null
+        iptables -t nat -A POSTROUTING -s 198.51.100.0/24 -d 203.0.113.0/24 -j MASQUERADE
+        sleep infinity
+
   # The receiver, running the real product image exactly as shipped: same
   # entrypoint, same unprivileged user, no test harness inside it.
   gedad:
@@ -35,6 +62,7 @@ services:
       context: ../..
       dockerfile: docker/Dockerfile
     image: geda/gedad:gate
+    depends_on: [router]
     networks:
       nas-net:
         ipv4_address: 203.0.113.30
@@ -49,16 +77,23 @@ services:
       - state:/state
       - data:/data
 
-  # Stands in for a phone on another network. It gets nothing but curl and
-  # openssl: everything it does, a mobile client can do.
+  # Stands in for a phone on another network. It gets curl, openssl, and a
+  # route to the receiver's subnet: everything it does, a mobile client can do.
   client:
     build:
       context: .
       dockerfile: Dockerfile.client
+    depends_on: [router]
+    cap_add: [NET_ADMIN]
     networks:
       client-net:
         ipv4_address: 198.51.100.20
-    command: ["sleep", "infinity"]
+    command:
+      - /bin/sh
+      - -c
+      - |
+        ip route replace 203.0.113.0/24 via 198.51.100.2
+        sleep infinity
 
 volumes:
   state:
