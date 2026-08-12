@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    name: core (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: core/go.mod
+          cache-dependency-path: core/go.sum
+
+      - name: gofmt
+        if: runner.os != 'Windows'
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "Not gofmt'd:"; echo "$unformatted"; exit 1
+          fi
+
+      - run: go vet ./...
+
+      - run: go build ./...
+
+      # The race detector is where the ledger's concurrency assumptions are
+      # actually checked, so it runs everywhere rather than on one platform.
+      - run: go test -race -count=1 ./...
+
+  cross-compile:
+    name: cross-compile
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: core/go.mod
+          cache-dependency-path: core/go.sum
+
+      # core/ must build for every target the desktop app, gedad, and the
+      # Docker image ship to, from one machine and with no cgo toolchain.
+      # A dependency that quietly needs cgo would break NAS builds.
+      - name: build all targets
+        run: |
+          set -e
+          for target in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64 windows/arm64; do
+            echo "==> $target"
+            CGO_ENABLED=0 GOOS=${target%/*} GOARCH=${target#*/} go build ./...
+          done
+
+  licence:
+    name: licence headers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: ./scripts/check-headers.sh
