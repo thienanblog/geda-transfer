@@ -43,8 +43,12 @@ first bottleneck.
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
 | _no run recorded yet_ | | | | | | | | | | | | |
 
-`scripts/verify-p4.sh` fails while this table has no row: an unmeasured
-performance gate is not a passed one.
+`scripts/verify-p4.sh` reports this table as unmeasured while it has no row,
+and `scripts/verify-p4.sh --require-measurement` fails on it — which is what to
+run when claiming the phase is done. CI runs the reporting form, plus
+`scripts/check-measurements.sh --strict` as a step that is allowed to be red:
+no commit can produce this number, and a check nobody can turn green is a check
+nobody reads. An unmeasured performance gate is still not a passed one.
 
 ---
 

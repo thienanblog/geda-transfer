@@ -528,3 +528,24 @@ exactly one place, with literals defined in that file.
 jsdom rather than a real browser: every assertion is about structure and
 wording, none of it depends on layout or on a rendering engine, and a browser
 would buy nothing and cost a download in CI.
+
+## 2026-08-13 — A gate no commit can turn green does not block CI
+P4's gate is MB/s from a physical iPhone, P5's is a force-quit run on one, and
+P6's is watching somebody who has never seen the app. `scripts/verify-p4.sh`
+used to exit 1 while `docs/PERFORMANCE.md` had no row, on the reasoning that an
+unmeasured performance gate is not a passed one. That reasoning still holds —
+but as a *required check* it made CI red on every commit since P4 merged, for a
+condition no commit could fix. A build that is always red reports nothing: the
+one real regression it catches looks exactly like the twenty runs before it.
+
+So the measurement is reported rather than asserted, which is the shape
+`verify-p5.sh` and `verify-p6.sh` already had for their own device halves. The
+blocking checks are now exactly the things a change to this repository can
+break. What is missing stays visible two ways: `scripts/check-measurements.sh
+--strict` runs in CI as a step allowed to fail, so the missing rows are on the
+page rather than in a comment, and `scripts/verify-p4.sh --require-measurement`
+still exits 1 — which is the form to run when claiming the phase is done.
+
+The tables in `docs/PERFORMANCE.md` remain the record. Nothing here lowers the
+bar for calling P4, P5, or P6 measured; it only stops a machine with no iPhone
+in it from being asked to prove something about an iPhone.
