@@ -29,6 +29,11 @@ type Transfer struct {
 	DeviceID   string `json:"device_id"`
 	DeviceName string `json:"device_name"`
 
+	// Direction is "inbound" for a file arriving from a phone and "outbound"
+	// for one this computer queued and a phone is collecting. Both appear in
+	// the same list, so the row has to say which it is.
+	Direction string `json:"direction"`
+
 	// Name is the filename on the sending device. Untrusted -- the UI renders
 	// it as text and never as markup or a path.
 	Name string `json:"name"`
@@ -136,16 +141,11 @@ func (l *live) apply(e events.Event) {
 		if _, ok := l.active[e.UploadID]; ok {
 			return
 		}
-		l.active[e.UploadID] = &Transfer{
-			UploadID:   e.UploadID,
-			DeviceID:   e.DeviceID,
-			DeviceName: e.DeviceName,
-			Name:       e.Name,
-			Kind:       e.AssetKind,
-			Size:       e.Size,
-			Offset:     e.Offset,
-			StartedAt:  e.At,
-		}
+		t := newTransfer(e)
+		// A resumed upload, and a download continuing by range, both start
+		// part way through. The bar has to open where the file actually is.
+		t.Offset = e.Offset
+		l.active[e.UploadID] = t
 
 	case events.KindProgress:
 		t, ok := l.active[e.UploadID]
@@ -153,15 +153,7 @@ func (l *live) apply(e events.Event) {
 			// A progress event with no start is possible only if the start was
 			// dropped by a full queue. Showing the file is better than losing
 			// it, so the row is reconstructed from what the event carries.
-			t = &Transfer{
-				UploadID:   e.UploadID,
-				DeviceID:   e.DeviceID,
-				DeviceName: e.DeviceName,
-				Name:       e.Name,
-				Kind:       e.AssetKind,
-				Size:       e.Size,
-				StartedAt:  e.At,
-			}
+			t = newTransfer(e)
 			l.active[e.UploadID] = t
 		}
 		l.advance(t, e.Offset, e.At)
@@ -169,15 +161,7 @@ func (l *live) apply(e events.Event) {
 	case events.KindFinished, events.KindFailed:
 		t, ok := l.active[e.UploadID]
 		if !ok {
-			t = &Transfer{
-				UploadID:   e.UploadID,
-				DeviceID:   e.DeviceID,
-				DeviceName: e.DeviceName,
-				Name:       e.Name,
-				Kind:       e.AssetKind,
-				Size:       e.Size,
-				StartedAt:  e.At,
-			}
+			t = newTransfer(e)
 		}
 		l.advance(t, e.Offset, e.At)
 		delete(l.active, e.UploadID)
@@ -202,6 +186,23 @@ func (l *live) apply(e events.Event) {
 		if len(l.recent) > recentLimit {
 			l.recent = l.recent[:recentLimit]
 		}
+	}
+}
+
+// newTransfer builds a row from whatever an event carries.
+//
+// It is used for events that are not a start as well, because a start can be
+// dropped by a full queue and showing the file is better than losing it.
+func newTransfer(e events.Event) *Transfer {
+	return &Transfer{
+		UploadID:   e.UploadID,
+		DeviceID:   e.DeviceID,
+		DeviceName: e.DeviceName,
+		Direction:  string(e.Direction.Or()),
+		Name:       e.Name,
+		Kind:       e.AssetKind,
+		Size:       e.Size,
+		StartedAt:  e.At,
 	}
 }
 

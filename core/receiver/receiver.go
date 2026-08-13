@@ -41,6 +41,7 @@ import (
 
 	"github.com/geda/geda-transfer/core/events"
 	"github.com/geda/geda-transfer/core/identity"
+	"github.com/geda/geda-transfer/core/outbox"
 	"github.com/geda/geda-transfer/core/pairing"
 	"github.com/geda/geda-transfer/core/storage"
 	"github.com/geda/geda-transfer/core/store"
@@ -105,6 +106,12 @@ type Server struct {
 
 	offers *pairing.Offers
 
+	// outbox is what this receiver is holding for phones to collect. It lives
+	// here rather than in the front end because there must be exactly one of
+	// it: queueing a file has to wake the same worker that the HTTP handlers
+	// read from.
+	outbox *outbox.Queue
+
 	seenMu   sync.Mutex
 	lastSeen map[string]time.Time
 }
@@ -132,6 +139,7 @@ func New(cfg Config) (*Server, error) {
 		log:      log,
 		uploads:  newUploadStore(cfg.Files, cfg.Events),
 		offers:   pairing.NewOffers(nil),
+		outbox:   outbox.New(cfg.DB, log),
 		lastSeen: make(map[string]time.Time),
 	}
 
@@ -167,6 +175,15 @@ func New(cfg Config) (*Server, error) {
 	s.mux.HandleFunc("POST /v1/pair", s.handlePair)
 	s.mux.Handle("POST /v1/have", s.authenticated(http.HandlerFunc(s.handleHave)))
 	s.mux.Handle(UploadPath, s.authenticated(http.StripPrefix(strings.TrimSuffix(UploadPath, "/"), handler)))
+
+	// Desktop to mobile. The phone pulls, because nothing can push to a
+	// suspended iOS app (AGENTS.md §3.7). Every one of these is scoped to the
+	// authenticated device inside the queue, so one phone cannot see, fetch,
+	// or acknowledge another's files.
+	s.mux.Handle("GET "+OutboxPath, s.authenticated(http.HandlerFunc(s.handleOutboxList)))
+	s.mux.Handle("GET "+OutboxPath+"/{id}", s.authenticated(http.HandlerFunc(s.handleOutboxFetch)))
+	s.mux.Handle("HEAD "+OutboxPath+"/{id}", s.authenticated(http.HandlerFunc(s.handleOutboxFetch)))
+	s.mux.Handle("DELETE "+OutboxPath+"/{id}", s.authenticated(http.HandlerFunc(s.handleOutboxAck)))
 
 	return s, nil
 }

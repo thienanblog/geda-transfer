@@ -265,6 +265,11 @@ func PairWith(ctx context.Context, payload pairing.Payload, self Device, cfg Con
 	return c, result, nil
 }
 
+// ErrRestartRequired reports that a resumed download cannot continue from
+// where it stopped, because the receiver no longer has the file the earlier
+// bytes came from. The remedy is to discard them and fetch it again.
+var ErrRestartRequired = errors.New("client: the download must start again")
+
 // Error is a receiver's error document (docs/PROTOCOL.md §7).
 type Error struct {
 	Status    int    `json:"-"`

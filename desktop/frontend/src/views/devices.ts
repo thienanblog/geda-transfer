@@ -3,10 +3,11 @@
 
 // The devices view: what has paired, and how to add or remove one.
 
-import type { Device } from "../bridge";
+import type { Device, QueuedFile } from "../bridge";
 import { api, message } from "../api";
 import { ago, bytes, plural } from "../format";
 import { el, icon, mount, on } from "../dom";
+import { outboxSection } from "./outbox";
 import { pairingDialog } from "./pairing";
 
 export function devicesView(): { element: HTMLElement; destroy: () => void } {
@@ -32,12 +33,29 @@ export function devicesView(): { element: HTMLElement; destroy: () => void } {
 
   on(add, "click", () => pairingDialog(() => void load()));
 
+  // Queues are held here rather than fetched by each card, so that the ten
+  // second refresh redraws in one pass instead of leaving every panel to
+  // arrive on its own and flicker.
+  let queues = new Map<string, QueuedFile[]>();
+
   async function load(): Promise<void> {
     try {
-      render(await api.devices());
+      const devices = await api.devices();
+      queues = await loadQueues(devices);
+      render(devices);
     } catch (err) {
       mount(list, el("p", { class: "error", text: message(err) }));
     }
+  }
+
+  async function loadQueues(devices: Device[]): Promise<Map<string, QueuedFile[]>> {
+    const active = devices.filter((device) => !device.revoked);
+    const loaded = await Promise.all(
+      // A queue that cannot be read is not worth failing the whole screen
+      // over: the device list is still the useful part of it.
+      active.map((device) => api.outbox(device.id).catch((): QueuedFile[] => [])),
+    );
+    return new Map(active.map((device, i) => [device.id, loaded[i] ?? []]));
   }
 
   function render(devices: Device[]): void {
@@ -72,23 +90,79 @@ export function devicesView(): { element: HTMLElement; destroy: () => void } {
 
     on(remove, "click", () => void confirmRemove(device));
 
+    const send = el("button", { class: "button", type: "button" }, icon("send"), "Send files");
+    if (device.revoked) send.disabled = true;
+
+    // Only devices that can still collect get a queue: a removed phone has
+    // none, and offering to send to one would be offering something that
+    // cannot happen.
+    const queue = device.revoked
+      ? undefined
+      : outboxSection(device, queues.get(device.id) ?? [], {
+          withdraw: (item) => void withdraw(device, item),
+          clearFinished: () => void clearFinished(device),
+        });
+
+    on(send, "click", () => void chooseAndSend(device, send));
+
+    const meta = device.revoked
+      ? "Removed — its files are still here"
+      : `Last seen ${ago(device.last_seen_at)} · ${plural(device.files, "file")} · ${bytes(device.bytes)}`;
+
     return el(
       "div",
-      { class: `card ${device.revoked ? "is-revoked" : ""}` },
-      el("div", { class: "card-icon" }, icon("devices")),
+      { class: `card card-device ${device.revoked ? "is-revoked" : ""}` },
       el(
         "div",
-        { class: "card-main" },
-        el("div", { class: "card-title", text: device.name }),
-        el("div", {
-          class: "card-meta",
-          text: device.revoked
-            ? "Removed — its files are still here"
-            : `Last seen ${ago(device.last_seen_at)} · ${plural(device.files, "file")} · ${bytes(device.bytes)}`,
-        }),
+        { class: "card-row" },
+        el("div", { class: "card-icon" }, icon("devices")),
+        el(
+          "div",
+          { class: "card-main" },
+          el("div", { class: "card-title", text: device.name }),
+          el("div", { class: "card-meta", text: meta }),
+        ),
+        send,
+        remove,
       ),
-      remove,
+      queue,
     );
+  }
+
+  // Sending is queueing. This computer cannot push to a phone that is asleep
+  // (AGENTS.md §3.7), so the confirmation says what will actually happen
+  // rather than reporting a transfer that has not started.
+  async function chooseAndSend(device: Device, button: HTMLButtonElement): Promise<void> {
+    button.disabled = true;
+    try {
+      const result = await api.chooseAndSend(device.id);
+      if (result.cancelled) return;
+      await load();
+    } catch (err) {
+      mount(list, el("p", { class: "error", text: message(err) }));
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  async function withdraw(device: Device, item: QueuedFile): Promise<void> {
+    try {
+      await api.cancelSend(device.id, item.id);
+    } catch (err) {
+      mount(list, el("p", { class: "error", text: message(err) }));
+      return;
+    }
+    await load();
+  }
+
+  async function clearFinished(device: Device): Promise<void> {
+    try {
+      await api.clearSent(device.id);
+    } catch (err) {
+      mount(list, el("p", { class: "error", text: message(err) }));
+      return;
+    }
+    await load();
   }
 
   // Removing a device is destructive to a credential, not to files, and the

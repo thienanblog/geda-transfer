@@ -65,6 +65,11 @@ type Device struct {
 	Revoked    bool       `json:"revoked"`
 	Files      int        `json:"files"`
 	Bytes      int64      `json:"bytes"`
+
+	// Queued is how many files are waiting for this device to collect them.
+	// It is the only visible sign that a send happened, because sending is
+	// queueing: nothing moves until the phone comes and asks.
+	Queued int `json:"queued"`
 }
 
 // HistoryEntry is one received file, as a history list shows it.
@@ -174,7 +179,9 @@ func (s *Service) CancelPairing() { s.srv.CancelPairing() }
 func (s *Service) Devices(ctx context.Context) ([]Device, error) {
 	rows, err := s.db.SQL().QueryContext(ctx, `
 		SELECT d.id, d.name, d.platform, d.paired_at, d.last_seen_at, d.revoked_at,
-		       COUNT(f.id), COALESCE(SUM(f.size), 0)
+		       COUNT(f.id), COALESCE(SUM(f.size), 0),
+		       (SELECT COUNT(*) FROM outbox o
+		        WHERE o.device_id = d.id AND o.state IN ('pending', 'ready', 'claimed'))
 		FROM devices d
 		LEFT JOIN files f ON f.device_id = d.id
 		GROUP BY d.id
@@ -192,7 +199,7 @@ func (s *Service) Devices(ctx context.Context) ([]Device, error) {
 			lastSeen, revokedAt sql.NullString
 		)
 		if err := rows.Scan(&dev.ID, &dev.Name, &dev.Platform, &pairedAt,
-			&lastSeen, &revokedAt, &dev.Files, &dev.Bytes); err != nil {
+			&lastSeen, &revokedAt, &dev.Files, &dev.Bytes, &dev.Queued); err != nil {
 			return nil, fmt.Errorf("list devices: %w", err)
 		}
 

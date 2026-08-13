@@ -11,7 +11,16 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { HistoryEntry, Snapshot, Transfer } from "../bridge";
-import { emptySnapshot, install, sampleStatus, settle, text } from "./harness";
+import {
+  emptySnapshot,
+  install,
+  queuedFile,
+  sampleDevice,
+  sampleStatus,
+  settle,
+  text,
+} from "./harness";
+import { devicesView } from "../views/devices";
 import { historyView } from "../views/history";
 import { settingsView } from "../views/settings";
 import { transfersView } from "../views/transfers";
@@ -29,6 +38,7 @@ function transfer(over: Partial<Transfer> = {}): Transfer {
     upload_id: "u1",
     device_id: "d1",
     device_name: "An's iPhone",
+    direction: "inbound",
     name: "IMG_4021.HEIC",
     kind: "photo",
     size: 4_000_000,
@@ -382,5 +392,144 @@ describe("when the receiver is not running", () => {
     )!;
     button.click();
     expect(openSettings).toHaveBeenCalled();
+  });
+});
+
+// P7 is the direction where the wording matters most. This computer cannot
+// push to a phone that is asleep, so a screen that says "Sent" the moment a
+// file is chosen is lying about something the user will only discover hours
+// later.
+describe("sending to a phone", () => {
+  it("offers to send to a paired device and says the phone has to come and get it", async () => {
+    const stub = install({
+      Devices: vi.fn(async () => [sampleDevice({ queued: 1 })]),
+      Outbox: vi.fn(async () => [queuedFile({ state: "ready" })]),
+    });
+
+    const view = devicesView();
+    await settle();
+
+    const send = [...view.element.querySelectorAll("button")].find((b) =>
+      text(b).includes("Send files"),
+    );
+    expect(send).toBeDefined();
+
+    const queue = text(view.element);
+    expect(queue).toContain("archive.zip");
+    expect(queue).toContain("Waiting for the phone to open the app");
+    // Never the word "sent" for something that has not moved.
+    expect(queue).not.toContain("Sent");
+
+    send?.click();
+    await settle();
+    expect(stub.go.ChooseAndSend).toHaveBeenCalledWith("phone-1");
+
+    view.destroy();
+  });
+
+  it("says why a queued file failed rather than leaving it looking pending", async () => {
+    install({
+      Devices: vi.fn(async () => [sampleDevice()]),
+      Outbox: vi.fn(async () => [
+        queuedFile({ state: "failed", error: "the file is no longer there" }),
+      ]),
+    });
+
+    const view = devicesView();
+    await settle();
+
+    expect(text(view.element)).toContain("the file is no longer there");
+    view.destroy();
+  });
+
+  it("withdraws a queued file without touching the device", async () => {
+    const stub = install({
+      Devices: vi.fn(async () => [sampleDevice({ queued: 1 })]),
+      Outbox: vi.fn(async () => [queuedFile()]),
+    });
+
+    const view = devicesView();
+    await settle();
+
+    const withdraw = [...view.element.querySelectorAll("button")].find(
+      (b) => text(b) === "Withdraw",
+    );
+    withdraw?.click();
+    await settle();
+
+    expect(stub.go.CancelSend).toHaveBeenCalledWith("phone-1", "item-1");
+    expect(stub.go.Unpair).not.toHaveBeenCalled();
+    view.destroy();
+  });
+
+  it("does not offer to send to a device that has been removed", async () => {
+    const stub = install({
+      Devices: vi.fn(async () => [sampleDevice({ revoked: true })]),
+    });
+
+    const view = devicesView();
+    await settle();
+
+    const send = [...view.element.querySelectorAll("button")].find((b) =>
+      text(b).includes("Send files"),
+    );
+    expect(send?.disabled).toBe(true);
+    // Nothing can collect it, so nothing is asked for.
+    expect(stub.go.Outbox).not.toHaveBeenCalled();
+    view.destroy();
+  });
+});
+
+describe("the transfers screen, both directions", () => {
+  it("says which way each file is going", async () => {
+    const outbound: Transfer = transfer({
+      upload_id: "outbox:i1",
+      direction: "outbound",
+      name: "archive.zip",
+      kind: "file",
+      outcome: "",
+      offset: 500_000,
+      size: 2_000_000,
+      stored_path: "",
+    });
+
+    install({
+      Transfers: vi.fn(
+        async (): Promise<Snapshot> => ({ ...emptySnapshot(), active: [outbound] }),
+      ),
+    });
+
+    const view = transfersView(sampleStatus, () => {});
+    await settle();
+
+    const shown = text(view.element);
+    expect(shown).toContain("Sending 1 file");
+    expect(shown).toContain("to An's iPhone");
+    expect(shown).not.toContain("from An's iPhone");
+
+    view.destroy();
+  });
+
+  it("does not offer to reveal a file this computer sent, because it never left", async () => {
+    const stub = install({
+      Transfers: vi.fn(
+        async (): Promise<Snapshot> => ({
+          ...emptySnapshot(),
+          recent: [
+            transfer({ direction: "outbound", outcome: "stored", stored_path: "" }),
+          ],
+        }),
+      ),
+    });
+
+    const view = transfersView(sampleStatus, () => {});
+    await settle();
+
+    const show = [...view.element.querySelectorAll("button")].find((b) => text(b) === "Show");
+    expect(show).toBeUndefined();
+    expect(text(view.element)).toContain("Sent");
+    expect(stub.go.RevealFile).not.toHaveBeenCalled();
+
+    view.destroy();
   });
 });

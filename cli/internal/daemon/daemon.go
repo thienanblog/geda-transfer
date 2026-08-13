@@ -93,8 +93,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 func (d *Daemon) Addr() net.Addr { return d.Service.Addr() }
 
 // The control socket's Backend is satisfied by the embedded service, whose
-// Status, Pair, Devices, and Unpair are the same operations the desktop's
-// menus call. These wrappers exist only to pin the types down at compile time.
+// Status, Pair, Devices, Unpair, and the outbox operations are the same ones
+// the desktop's menus call. These wrappers exist only to pin the types down at
+// compile time.
 var _ control.Backend = (*Daemon)(nil)
 
 // Status implements control.Backend.
@@ -110,4 +111,19 @@ func (d *Daemon) Pair(ctx context.Context, ttl time.Duration) (control.Offer, er
 // Devices implements control.Backend.
 func (d *Daemon) Devices(ctx context.Context) ([]control.Device, error) {
 	return d.Service.Devices(ctx)
+}
+
+// Send implements control.Backend.
+func (d *Daemon) Send(ctx context.Context, deviceID string, paths []string) ([]control.QueuedFile, error) {
+	return d.Service.Send(ctx, deviceID, paths)
+}
+
+// Outbox implements control.Backend.
+func (d *Daemon) Outbox(ctx context.Context, deviceID string) ([]control.QueuedFile, error) {
+	return d.Service.Outbox(ctx, deviceID)
+}
+
+// CancelSend implements control.Backend.
+func (d *Daemon) CancelSend(ctx context.Context, deviceID, id string) error {
+	return d.Service.CancelSend(ctx, deviceID, id)
 }

@@ -31,6 +31,12 @@ type fakeBackend struct {
 	unpairErr  error
 	statusErr  error
 	deviceList []Device
+
+	sentTo    string
+	sentPaths []string
+	queued    []QueuedFile
+	cancelled [2]string
+	sendErr   error
 }
 
 func (f *fakeBackend) Status(context.Context) (Status, error) {
@@ -50,6 +56,24 @@ func (f *fakeBackend) Devices(context.Context) ([]Device, error) { return f.devi
 func (f *fakeBackend) Unpair(_ context.Context, id string) error {
 	f.unpaired = id
 	return f.unpairErr
+}
+
+func (f *fakeBackend) Send(_ context.Context, deviceID string, paths []string) ([]QueuedFile, error) {
+	f.sentTo, f.sentPaths = deviceID, paths
+	if f.sendErr != nil {
+		return nil, f.sendErr
+	}
+	return f.queued, nil
+}
+
+func (f *fakeBackend) Outbox(_ context.Context, deviceID string) ([]QueuedFile, error) {
+	f.sentTo = deviceID
+	return f.queued, nil
+}
+
+func (f *fakeBackend) CancelSend(_ context.Context, deviceID, id string) error {
+	f.cancelled = [2]string{deviceID, id}
+	return nil
 }
 
 // socketPath keeps the path short: sun_path is about a hundred characters, and
@@ -250,5 +274,56 @@ func TestServeRemovesTheSocketOnShutdown(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("socket still present after shutdown: %v", err)
+	}
+}
+
+// Sending is queueing: the daemon is the process that will still have to read
+// the file when the phone finally asks for it, so it is the one that resolves
+// and checks the path.
+func TestSendQueueAndCancelRoundTrip(t *testing.T) {
+	backend := &fakeBackend{queued: []QueuedFile{
+		{ID: "item-1", DeviceID: "phone-1", Filename: "archive.zip", Size: 2048, Kind: "file", State: "pending"},
+	}}
+	client := serve(t, backend)
+	ctx := context.Background()
+
+	queued, err := client.Send(ctx, "phone-1", []string{"/srv/media/archive.zip"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if backend.sentTo != "phone-1" {
+		t.Errorf("queued for %q, want phone-1", backend.sentTo)
+	}
+	if len(backend.sentPaths) != 1 || backend.sentPaths[0] != "/srv/media/archive.zip" {
+		t.Errorf("paths reached the daemon as %v", backend.sentPaths)
+	}
+	if len(queued) != 1 || queued[0].Filename != "archive.zip" {
+		t.Fatalf("reply was %+v", queued)
+	}
+
+	listed, err := client.Outbox(ctx, "phone-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].ID != "item-1" {
+		t.Errorf("outbox listing was %+v", listed)
+	}
+
+	if err := client.CancelSend(ctx, "phone-1", "item-1"); err != nil {
+		t.Fatal(err)
+	}
+	if backend.cancelled != [2]string{"phone-1", "item-1"} {
+		t.Errorf("cancelled %v", backend.cancelled)
+	}
+}
+
+func TestSendRequiresADevice(t *testing.T) {
+	client := serve(t, &fakeBackend{})
+
+	if _, err := client.Send(context.Background(), "", []string{"/tmp/x"}); err == nil {
+		t.Error("queueing without naming a device was accepted")
+	}
+	if _, err := client.Outbox(context.Background(), ""); err == nil {
+		t.Error("listing an outbox without naming a device was accepted")
 	}
 }

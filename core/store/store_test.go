@@ -399,16 +399,29 @@ func TestConcurrentOpenersBothMigrate(t *testing.T) {
 		t.FailNow()
 	}
 
-	// The schema must have been applied exactly once regardless of how many
-	// processes raced to do it.
-	var applied int
+	// Each migration must have been applied exactly once regardless of how
+	// many processes raced to do it. Counting rows against a fixed number
+	// would only be asserting how many migrations exist today, so the check
+	// is that no version was recorded twice.
+	var rows, versions int
 	err := dbs[0].SQL().QueryRowContext(t.Context(),
-		`SELECT COUNT(*) FROM schema_migrations`).Scan(&applied)
+		`SELECT COUNT(*), COUNT(DISTINCT version) FROM schema_migrations`).Scan(&rows, &versions)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if applied != 1 {
-		t.Errorf("schema_migrations has %d rows, want 1", applied)
+	if rows == 0 {
+		t.Fatal("no migrations were applied at all")
+	}
+	if rows != versions {
+		t.Errorf("schema_migrations has %d rows for %d versions; one was applied twice", rows, versions)
+	}
+
+	latest, err := dbs[0].SchemaVersion(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest != versions {
+		t.Errorf("schema version is %d after applying %d migrations", latest, versions)
 	}
 }
 

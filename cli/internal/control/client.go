@@ -23,6 +23,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -72,6 +73,28 @@ func (c *Client) Devices(ctx context.Context) ([]Device, error) {
 // Unpair revokes a device's token.
 func (c *Client) Unpair(ctx context.Context, deviceID string) error {
 	return c.do(ctx, http.MethodPost, "/v1/unpair", unpairRequest{DeviceID: deviceID}, nil)
+}
+
+// Send queues files for a device to collect. Nothing is transferred by this
+// call: the phone pulls when it is next opened (docs/PROTOCOL.md §6).
+func (c *Client) Send(ctx context.Context, deviceID string, paths []string) ([]QueuedFile, error) {
+	var out []QueuedFile
+	err := c.do(ctx, http.MethodPost, "/v1/send",
+		sendRequest{DeviceID: deviceID, Paths: paths}, &out)
+	return out, err
+}
+
+// Outbox lists what is queued for a device.
+func (c *Client) Outbox(ctx context.Context, deviceID string) ([]QueuedFile, error) {
+	var out []QueuedFile
+	err := c.do(ctx, http.MethodGet, "/v1/outbox?device_id="+url.QueryEscape(deviceID), nil, &out)
+	return out, err
+}
+
+// CancelSend withdraws one queued file.
+func (c *Client) CancelSend(ctx context.Context, deviceID, id string) error {
+	return c.do(ctx, http.MethodPost, "/v1/cancel-send",
+		cancelSendRequest{DeviceID: deviceID, ID: id}, nil)
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body, into any) error {

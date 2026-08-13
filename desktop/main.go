@@ -195,6 +195,12 @@ func (e emitter) Emit(name string, data ...any) {
 // chooser opens the platform's folder picker.
 type chooser struct{ ctx context.Context }
 
+func (c chooser) ChooseFiles(title string) ([]string, error) {
+	return wruntime.OpenMultipleFilesDialog(c.ctx, wruntime.OpenDialogOptions{
+		Title: title,
+	})
+}
+
 func (c chooser) ChooseFolder(title, defaultPath string) (string, error) {
 	return wruntime.OpenDirectoryDialog(c.ctx, wruntime.OpenDialogOptions{
 		Title:                title,

@@ -84,6 +84,7 @@ func newUploadStore(files *storage.Store, bus *events.Bus) *uploadStore {
 // watcher cannot be shown a peer's name (docs/DECISIONS.md).
 func eventFor(info tus.FileInfo) events.Event {
 	return events.Event{
+		Direction:  events.DirectionInbound,
 		UploadID:   info.ID,
 		DeviceID:   info.MetaData["device_id"],
 		DeviceName: info.MetaData["device_name"],

@@ -22,6 +22,20 @@ frontend/               The page: strict TypeScript, no framework.
 calls can be called from a test with no toolkit, which is what makes the phase
 gate something a script can drive.
 
+## Sending to a phone
+
+"Send files" on a device is a queue, not a transfer. Nothing can push to a
+suspended iPhone (AGENTS.md §3.7), so the files are hashed and put on offer,
+and the phone collects them the next time somebody opens the app — continuing
+in the background if they put it down. The queue under each device card is
+where you see whether that has happened; the live view shows the bytes moving
+when it does, with an arrow saying which way.
+
+The bytes are never copied into the app's own storage. A queued file is a
+pointer to where it already lives, and the size and mtime seen when it was
+hashed are re-checked before it is served, so editing or deleting it afterwards
+fails that one item instead of sending content its digest no longer describes.
+
 ## Building
 
 ```

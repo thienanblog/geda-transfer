@@ -32,8 +32,8 @@ export function transfersView(status: Status, openPairing: () => void): {
 
     mount(
       list,
-      active.length > 0 && section("Arriving now", active.map((t) => row(t, true))),
-      recent.length > 0 && section("Just received", recent.map((t) => row(t, false))),
+      active.length > 0 && section(movingTitle(active), active.map((t) => row(t, true))),
+      recent.length > 0 && section("Just finished", recent.map((t) => row(t, false))),
     );
   }
 
@@ -65,7 +65,7 @@ export function transfersView(status: Status, openPairing: () => void): {
         el(
           "div",
           { class: "summary-line" },
-          el("strong", { text: `Receiving ${plural(active.length, "file")}` }),
+          el("strong", { text: movingTitle(active) }),
           speed ? el("span", { class: "speed", text: speed }) : null,
         ),
         bar(percent(done, total)),
@@ -85,13 +85,24 @@ export function transfersView(status: Status, openPairing: () => void): {
     const kindIcon =
       transfer.kind === "photo" ? "photo" : transfer.kind === "video" ? "video" : "file";
 
-    const meta: HTMLElement[] = [el("span", { text: transfer.device_name || "Unknown device" })];
+    // Which way it is going, in words as well as an arrow: an icon alone
+    // leaves somebody guessing which end of the arrow is this computer.
+    const outbound = transfer.direction === "outbound";
+    const device = transfer.device_name || "Unknown device";
+    const meta: HTMLElement[] = [
+      el("span", { text: outbound ? `to ${device}` : `from ${device}` }),
+    ];
     if (transfer.size > 0) meta.push(el("span", { text: bytes(transfer.size) }));
 
     const node = el(
       "div",
       { class: `transfer ${active ? "is-active" : ""}` },
-      el("div", { class: "transfer-icon" }, icon(kindIcon)),
+      el(
+        "div",
+        { class: "transfer-icon" },
+        icon(kindIcon),
+        icon(outbound ? "outbound" : "inbound", "icon icon-direction"),
+      ),
       el(
         "div",
         { class: "transfer-main" },
@@ -130,6 +141,17 @@ export function transfersView(status: Status, openPairing: () => void): {
       );
     }
 
+    // An outbound file is one this computer already has, so there is nothing
+    // to reveal: the interesting fact is that the phone took it.
+    if (transfer.direction === "outbound" || !transfer.stored_path) {
+      return el(
+        "div",
+        { class: "transfer-status is-stored" },
+        icon("check"),
+        el("span", { text: transfer.direction === "outbound" ? "Sent" : "Saved" }),
+      );
+    }
+
     const show = el("button", { class: "link", type: "button" }, "Show");
     on(show, "click", () => {
       if (transfer.stored_path) void api.revealFile(transfer.stored_path).catch(() => {});
@@ -158,6 +180,20 @@ export function transfersView(status: Status, openPairing: () => void): {
       window.clearInterval(refresher);
     },
   };
+}
+
+// movingTitle names what is happening, in the direction it is happening.
+//
+// Both directions share one list, because from the user's point of view there
+// is one thing going on -- files moving -- and two lists that are usually
+// empty is worse than one that is sometimes mixed.
+function movingTitle(active: Transfer[]): string {
+  const outbound = active.filter((t) => t.direction === "outbound").length;
+  const files = plural(active.length, "file");
+
+  if (outbound === 0) return `Receiving ${files}`;
+  if (outbound === active.length) return `Sending ${files}`;
+  return `Transferring ${files}`;
 }
 
 function bar(value: number): HTMLElement {

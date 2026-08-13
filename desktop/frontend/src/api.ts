@@ -8,6 +8,8 @@ import type {
   GoApp,
   HistoryEntry,
   PairCode,
+  QueuedFile,
+  SendResult,
   Settings,
   SettingsView,
   Snapshot,
@@ -41,6 +43,10 @@ export const api = {
   chooseDestination: (): Promise<string> => backend().ChooseDestination(),
   openDestination: (): Promise<void> => backend().OpenDestination(),
   revealFile: (storedPath: string): Promise<void> => backend().RevealFile(storedPath),
+  chooseAndSend: (deviceID: string): Promise<SendResult> => backend().ChooseAndSend(deviceID),
+  outbox: (deviceID: string): Promise<QueuedFile[]> => backend().Outbox(deviceID),
+  cancelSend: (deviceID: string, id: string): Promise<void> => backend().CancelSend(deviceID, id),
+  clearSent: (deviceID: string): Promise<number> => backend().ClearSent(deviceID),
   finishOnboarding: (): Promise<void> => backend().FinishOnboarding(),
 };
 

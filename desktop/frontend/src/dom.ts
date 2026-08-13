@@ -93,4 +93,9 @@ const paths = {
   video: '<path d="m23 7-7 5 7 5z"/><rect x="1" y="5" width="15" height="14" rx="2"/>',
   file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/>',
   plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',
+  // Which way the bytes are going. Inbound is a phone sending to this
+  // computer; outbound is this computer's file being collected by a phone.
+  inbound: '<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>',
+  outbound: '<path d="M12 19V5"/><path d="m5 12 7-7 7 7"/>',
+  send: '<path d="M4 12h10"/><path d="m10 7 5 5-5 5"/><path d="M16 4h2a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-2"/>',
 } as const;

@@ -59,13 +59,19 @@ type Emitter interface {
 	Emit(name string, data ...any)
 }
 
-// Chooser asks the user to pick a folder. Implemented by the Wails dialog.
+// Chooser asks the user to pick a folder or some files. Implemented by the
+// Wails dialog.
 //
 // It takes no context: the dialog needs the toolkit's own context, which the
 // shell holds, and passing a second one would only invite the mistake of
 // using the wrong one.
 type Chooser interface {
 	ChooseFolder(title, defaultPath string) (string, error)
+
+	// ChooseFiles returns absolute paths, or nothing at all when the user
+	// cancels. Cancelling is not an error and must not raise anything on
+	// screen.
+	ChooseFiles(title string) ([]string, error)
 }
 
 // nopEmitter is used before the window exists and in tests.
