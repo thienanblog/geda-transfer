@@ -21,6 +21,7 @@
 import { NativeModule, requireNativeModule } from 'expo';
 
 import type { BackgroundJob } from '../../src/core/background';
+import type { DownloadJob } from '../../src/core/inbox';
 
 export type UploadProgressEvent = {
   uploadId: string;
@@ -41,11 +42,41 @@ export type BackgroundProgressEvent = {
   totalBytes: number;
 };
 
+/** Progress from the download session, while the app happens to be alive. */
+export type DownloadProgressEvent = {
+  itemId: string;
+  bytesReceived: number;
+  totalBytes: number;
+};
+
 export type GedaTransferEvents = {
   onUploadProgress: (event: UploadProgressEvent) => void;
   onUploadCreated: (event: UploadCreatedEvent) => void;
   onBackgroundProgress: (event: BackgroundProgressEvent) => void;
   onBackgroundFinished: (job: BackgroundJob) => void;
+  onDownloadProgress: (event: DownloadProgressEvent) => void;
+  onDownloadFinished: (job: DownloadJob) => void;
+};
+
+/** One file to collect from a receiver (docs/PROTOCOL.md §6). */
+export type DownloadRequest = {
+  /** The receiver's identifier for the item; what the acknowledgement quotes. */
+  itemId: string;
+  receiverId: string;
+  receiverName: string;
+  /** The name on the sending computer. Untrusted until sanitised. */
+  filename: string;
+  kind: 'photo' | 'video' | 'file';
+  /** RFC3339, or empty. */
+  capturedAt: string;
+  baseUrl: string;
+  /** Path on the receiver, always under /v1/outbox. */
+  path: string;
+  pin: string;
+  token: string;
+  /** Hex SHA-256. Nothing is saved until the bytes reproduce it. */
+  sha256: string;
+  size: number;
 };
 
 /** One file for the background session. */
@@ -161,6 +192,42 @@ declare class GedaTransferModule extends NativeModule<GedaTransferEvents> {
 
   /** False when the user has turned Live Activities off for this app. */
   liveActivitiesAvailable(): boolean;
+
+  /**
+   * Where files that arrive as documents are kept, inside the app container
+   * and visible in the Files app.
+   */
+  receivedDirectory(): string;
+
+  /**
+   * Hands the downloads to the system. From here they continue whether or not
+   * this app is running.
+   */
+  startDownloads(requests: DownloadRequest[]): Promise<string[]>;
+
+  /** Hands back anything the system stopped working on, resuming by range. */
+  reconcileDownloads(): Promise<DownloadJob[]>;
+
+  /** The same, for downloads that failed outright. */
+  retryDownloads(): Promise<DownloadJob[]>;
+
+  downloadJobs(): DownloadJob[];
+
+  /** Forgets a download that has been verified, saved, and acknowledged. */
+  finishDownload(itemId: string): void;
+
+  /** Records that a download could not be used, and deletes its bytes. */
+  failDownload(itemId: string, reason: string): void;
+
+  cancelDownloads(): void;
+
+  /**
+   * The SHA-256 of a file on disk, computed natively.
+   *
+   * The bytes must not cross the bridge to be hashed any more than they may to
+   * be sent (AGENTS.md §3.8).
+   */
+  sha256OfFile(path: string): Promise<string>;
 }
 
 export default requireNativeModule<GedaTransferModule>('GedaTransfer');

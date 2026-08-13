@@ -53,7 +53,10 @@ public final class GedaBackgroundDelegate: ExpoAppDelegateSubscriber {
     // A launch is also the moment to notice that something was interrupted:
     // the phone may have been off the network for a day, and the tasks the
     // system gave up on are only visible from here.
-    Task { await BackgroundUploader.shared.reconcile() }
+    Task {
+      await BackgroundUploader.shared.reconcile()
+      await BackgroundDownloader.shared.reconcile()
+    }
 
     return true
   }
@@ -63,11 +66,14 @@ public final class GedaBackgroundDelegate: ExpoAppDelegateSubscriber {
     handleEventsForBackgroundURLSession identifier: String,
     completionHandler: @escaping () -> Void
   ) {
-    guard identifier == BackgroundUploader.sessionIdentifier else {
+    switch identifier {
+    case BackgroundUploader.sessionIdentifier:
+      BackgroundUploader.shared.adopt(systemCompletion: completionHandler)
+    case BackgroundDownloader.sessionIdentifier:
+      BackgroundDownloader.shared.adopt(systemCompletion: completionHandler)
+    default:
       completionHandler()
-      return
     }
-    BackgroundUploader.shared.adopt(systemCompletion: completionHandler)
   }
 
   public func applicationDidEnterBackground(_ application: UIApplication) {
@@ -80,7 +86,12 @@ public final class GedaBackgroundDelegate: ExpoAppDelegateSubscriber {
   /// transfer costs radio and disk, and doing that to a phone in someone's
   /// pocket at 12% battery is the behaviour that gets an app deleted.
   public static func scheduleKickoff() {
-    guard !BackgroundStore.shared.all().filter({ !$0.isFinished }).isEmpty else { return }
+    let uploads = BackgroundStore.shared.all().contains { !$0.isFinished }
+    // A download that is still coming deserves a wake-up too, and one that has
+    // arrived deserves one more: the file is sitting in the container and only
+    // the app can put it in the photo library.
+    let downloads = DownloadStore.shared.all().contains { $0.state != .failed }
+    guard uploads || downloads else { return }
 
     let request = BGProcessingTaskRequest(identifier: kickoffIdentifier)
     request.requiresNetworkConnectivity = true
@@ -105,6 +116,8 @@ public final class GedaBackgroundDelegate: ExpoAppDelegateSubscriber {
     let work = Task { () -> Void in
       await BackgroundUploader.shared.reconcile()
       await BackgroundUploader.shared.retryFailed()
+      await BackgroundDownloader.shared.reconcile()
+      await BackgroundDownloader.shared.retryFailed()
       task.setTaskCompleted(success: true)
     }
     task.expirationHandler = {
