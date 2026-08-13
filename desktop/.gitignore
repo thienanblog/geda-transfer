@@ -1,0 +1,7 @@
+# Built by `npm run build`, embedded by the Go build. Not checked in: it is
+# generated, it is large, and a stale copy in the tree is worse than none.
+frontend/dist/
+frontend/node_modules/
+
+# `wails build` output.
+build/bin/

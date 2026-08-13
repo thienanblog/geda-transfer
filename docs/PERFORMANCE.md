@@ -97,3 +97,45 @@ foreground one is still the right trade and a hundred times longer is not.
 
 The P4 baseline above is the comparison: background is expected to be slower,
 never wrong.
+
+---
+
+## P6 gate — desktop app
+
+**The gate (docs/PLAN.md):** a person who has never seen the app can pair and
+transfer without instructions.
+
+This one is not a number, and it is the only gate whose subject is a person.
+`scripts/verify-p6.sh` checks everything that person depends on — the layering,
+the build, the tested logic, a zero-configuration first run, and a real pairing
+and upload driven through the same bindings the window calls — and then stops,
+because no script can watch somebody get stuck.
+
+### How to run it
+
+Find somebody who has not seen the app. A person who has watched it being built
+cannot un-know where the button is.
+
+1. Build it and install it on a machine they have not used:
+   ```bash
+   cd desktop/frontend && npm ci && npm run build
+   cd .. && wails build
+   ```
+2. Put Geda Transfer on a phone and pair nothing in advance.
+3. Hand both over. Say only: "send a photo from the phone to this computer."
+4. **Say nothing else.** Every question they ask is a row in the table below,
+   and answering it destroys the measurement.
+5. Watch for the four places this can fail: finding how to start pairing,
+   getting the code scanned, believing the transfer worked, and finding the
+   file afterwards.
+6. Record what happened, including a run where they got stuck — a table with
+   only successes in it is not evidence.
+
+### Results
+
+| Date | Observer | Subject has used it before | OS | Time to paired | Time to first file | Questions asked | Got stuck on | Found the file unaided | Notes |
+|---|---|---|---|---|---|---|---|---|---|
+| _no run recorded yet_ | | | | | | | | | |
+
+Until this table has a row, P6's gate is met in everything the app does and
+unverified in the one thing it is actually about.
