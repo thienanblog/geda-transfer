@@ -149,7 +149,17 @@ func TestLoadOnAFreshLedgerReturnsTheDefaults(t *testing.T) {
 
 func TestValidateRefusesWhatCannotWork(t *testing.T) {
 	base := settings.Default()
-	base.Dest = filepath.Join(string(filepath.Separator), "tmp", "dest")
+	base.Dest = t.TempDir()
+
+	// Without this the mutations below prove nothing: a base that is already
+	// invalid makes every case "fail" for a reason that has nothing to do with
+	// what it claims to test. That is not hypothetical -- the first version of
+	// this test built its destination as filepath.Join("/", "tmp", "dest"),
+	// which is `\tmp\dest` on Windows and not an absolute path there, so
+	// every case passed for the wrong reason.
+	if err := base.Validate(); err != nil {
+		t.Fatalf("the fixture is not valid to begin with: %v", err)
+	}
 
 	for _, tc := range []struct {
 		name   string
@@ -192,7 +202,7 @@ func TestSaveRejectsInvalidSettings(t *testing.T) {
 // handed to it when it was built.
 func TestNeedsRestart(t *testing.T) {
 	base := settings.Default()
-	base.Dest = filepath.Join(string(filepath.Separator), "tmp", "dest")
+	base.Dest = t.TempDir()
 	base.Advertise = []string{"203.0.113.7"}
 
 	same := base
@@ -217,7 +227,7 @@ func TestNeedsRestart(t *testing.T) {
 		mutate func(*settings.Settings)
 	}{
 		{"name", func(s *settings.Settings) { s.Name = "Другой" }},
-		{"destination", func(s *settings.Settings) { s.Dest = "/tmp/elsewhere" }},
+		{"destination", func(s *settings.Settings) { s.Dest = filepath.Join(base.Dest, "elsewhere") }},
 		{"port", func(s *settings.Settings) { s.Port = 51000 }},
 		{"mDNS", func(s *settings.Settings) { s.MDNS = !s.MDNS }},
 		{"discovery", func(s *settings.Settings) { s.Discovery = !s.Discovery }},
@@ -235,10 +245,11 @@ func TestNeedsRestart(t *testing.T) {
 func TestServiceConfigCarriesTheSettings(t *testing.T) {
 	set := settings.Default()
 	set.Name = "  Studio Mac  "
-	set.Dest = filepath.Join(string(filepath.Separator), "tmp", "dest")
+	set.Dest = t.TempDir()
 	set.Port = 51000
 
-	cfg := set.ServiceConfig("/tmp/state", "1.2.3")
+	stateDir := t.TempDir()
+	cfg := set.ServiceConfig(stateDir, "1.2.3")
 
 	if cfg.Name != "Studio Mac" {
 		t.Errorf("Name = %q; surrounding space was not trimmed", cfg.Name)
@@ -246,7 +257,7 @@ func TestServiceConfigCarriesTheSettings(t *testing.T) {
 	if cfg.Listen != ":51000" {
 		t.Errorf("Listen = %q, want :51000", cfg.Listen)
 	}
-	if cfg.StateDir != "/tmp/state" || cfg.Version != "1.2.3" {
+	if cfg.StateDir != stateDir || cfg.Version != "1.2.3" {
 		t.Errorf("unexpected config: %+v", cfg)
 	}
 	if cfg.NamingTemplate != settings.DefaultTemplate {
@@ -281,7 +292,7 @@ func TestStateDirHonoursTheOverride(t *testing.T) {
 // leave every paired phone dialling nothing.
 func TestEphemeralPortIsRefusedUnlessAskedFor(t *testing.T) {
 	set := settings.Default()
-	set.Dest = filepath.Join(string(filepath.Separator), "tmp", "dest")
+	set.Dest = t.TempDir()
 	set.Port = 0
 
 	if err := set.Validate(); err == nil {

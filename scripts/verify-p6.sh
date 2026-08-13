@@ -15,7 +15,9 @@
 #
 #   * core/ still has no UI dependency, and the desktop is still a layer over
 #     it rather than a second implementation (AGENTS.md §2);
-#   * the app compiles, its logic is tested, and its page typechecks;
+#   * the page typechecks, builds, and its own tests pass -- the window says
+#     what happened, not only the receiver;
+#   * the app compiles and its logic is tested;
 #   * a machine with nothing configured comes up ready to receive;
 #   * the first screen's pairing code is one a real pinned TLS client redeems,
 #     and a file sent against it arrives, verifies, and is findable;
@@ -66,6 +68,41 @@ pass "the desktop runs core/service, the same receiver gedad runs"
 # It builds, and its logic is tested
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# The window
+# ---------------------------------------------------------------------------
+#
+# This has to come first. The binary embeds frontend/dist, which is generated
+# and not checked in, so every Go step below fails on a clean checkout until
+# the page has been built once.
+#
+# The existing dist is removed rather than reused: leaving it in place lets
+# this script pass on a machine that happens to have built the page earlier,
+# for a reason a clean checkout will not have. That exact difference is what
+# made the first version of this gate pass locally and fail in CI.
+
+echo "==> the window"
+rm -rf desktop/frontend/dist
+
+(cd desktop/frontend && npm ci --no-audit --no-fund >/dev/null 2>&1) \
+    || fail "the window's dependencies would not install"
+(cd desktop/frontend && npm run --silent typecheck) || fail "TypeScript errors"
+pass "the page typechecks under strict mode"
+
+(cd desktop/frontend && npm run --silent build >/dev/null) || fail "the page does not build"
+[ -f desktop/frontend/dist/index.html ] || fail "the page built nothing to embed"
+pass "the page builds"
+
+# What the Go gate cannot reach: not "does the receiver work" but "does the
+# window show a person what happened, and tell them what to do next".
+(cd desktop/frontend && npm run --silent test >/dev/null) \
+    || fail "the window's own tests failed"
+pass "the screens a first-time user sees are tested"
+
+# ---------------------------------------------------------------------------
+# It builds, and its logic is tested
+# ---------------------------------------------------------------------------
+
 echo "==> building"
 
 for module in core cli desktop; do
@@ -98,23 +135,6 @@ pass "the live view, the settings, and the pairing code are tested"
 (cd desktop && go test -count=1 -tags dev ./internal/settings/ >/dev/null) \
     || fail "the development build shares state with the installed app"
 pass "a development build keeps its own state directory"
-
-echo "==> typechecking the window"
-(cd desktop/frontend && npm ci --no-audit --no-fund >/dev/null 2>&1) \
-    || fail "the window's dependencies would not install"
-(cd desktop/frontend && npm run --silent typecheck) || fail "TypeScript errors"
-pass "the page typechecks under strict mode"
-
-(cd desktop/frontend && npm run --silent build >/dev/null) || fail "the page does not build"
-pass "the page builds"
-
-# The Go gate below proves the receiver works. These prove the *window* does:
-# that it shows what happened, says what to do next, and renders a filename
-# that came off a phone as text rather than as markup.
-echo "==> what the window shows"
-(cd desktop/frontend && npm run --silent test >/dev/null) \
-    || fail "the window's own tests failed"
-pass "the screens a first-time user sees are tested"
 
 # ---------------------------------------------------------------------------
 # The gate itself, driven through the app's own bindings
