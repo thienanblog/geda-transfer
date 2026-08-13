@@ -169,8 +169,21 @@ func StateDir() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("find the configuration directory: %w", err)
 	}
-	return filepath.Join(dir, "geda"), nil
+	// A development build lands beside the installed app's state, never in it.
+	// An explicit override above is honoured exactly as given: somebody who
+	// named a directory meant that directory.
+	return filepath.Join(dir, "geda"+variant), nil
 }
+
+// Variant distinguishes a development build from a shipped one.
+//
+// It is empty for a release and "-dev" under `wails dev`, and it qualifies
+// everything that must not be shared between the two: the state directory and
+// the single-instance lock.
+func Variant() string { return variant }
+
+// IsDev reports whether this is a development build.
+func IsDev() bool { return variant != "" }
 
 // Load reads the settings, falling back to Default for anything unset.
 func Load(ctx context.Context, db *store.DB) (Settings, error) {

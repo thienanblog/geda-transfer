@@ -186,6 +186,16 @@ jobs:
 
       - run: go test -race -count=1 ./...
 
+      # A development build must keep its own state directory: pairing writes
+      # a TLS identity, and damaging the installed app's makes every paired
+      # phone fail with a pin mismatch that has no override.
+      - run: go test -count=1 -tags dev ./internal/settings/
+
+      # What the window shows, as opposed to what the receiver does.
+      - name: the window's own tests
+        working-directory: desktop/frontend
+        run: npm run test
+
 
   cross-compile:
     name: cross-compile

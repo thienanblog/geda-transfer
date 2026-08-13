@@ -494,3 +494,37 @@ a zero-configuration first run, a real pairing and upload through the app's
 own bindings, and the settings a first-timer is most likely to change — and
 then says plainly that the half which is a person is not claimed. That half is
 recorded in docs/PERFORMANCE.md by somebody who watched one.
+
+## 2026-08-13 — A development build keeps its own state directory
+`wails dev` compiles with the `dev` build tag, so the separation is by
+construction rather than by remembering to set an environment variable: the
+state directory becomes `geda-dev`, the single-instance lock is qualified, and
+the window is titled "(dev)".
+
+It matters more here than in most apps. Pairing is the thing being worked on,
+and pairing writes device rows and a TLS identity into the ledger. A developer
+testing it against their real state accumulates junk devices in the app they
+actually use — and a mistake that damages the identity makes every phone they
+own fail with a pin mismatch that has no override (AGENTS.md §3.5).
+
+`GEDA_STATE_DIR` is honoured exactly as given in both variants, unsuffixed:
+somebody who named a directory meant that directory.
+
+## 2026-08-13 — The window is tested too, in jsdom, against a stubbed bridge
+The Go gate proves the receiver works. It cannot prove the window *says* so,
+and P6's gate is about what a person reads. So the views have their own tests:
+they run the real view code against a fake `window.go`, and assert the things a
+first-time user depends on — that the first screen shows a code and where files
+will go, that an empty transfer list says what to do next rather than only
+reporting an absence, that "already had it" is distinguished from "stored" and
+from "failed", that a refused setting shows its reason and keeps what was
+typed, and that a cancelled folder picker does not wipe the destination.
+
+One of them is a security test rather than a usability one: filenames and
+device names come off a phone and are untrusted, so a hostile name must render
+as text. `dom.ts` sets text through `textContent` and uses `innerHTML` in
+exactly one place, with literals defined in that file.
+
+jsdom rather than a real browser: every assertion is about structure and
+wording, none of it depends on layout or on a rendering engine, and a browser
+would buy nothing and cost a download in CI.

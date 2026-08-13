@@ -90,6 +90,15 @@ echo "==> testing"
 (cd desktop && go test -count=1 ./... >/dev/null) || fail "desktop/ tests failed"
 pass "the live view, the settings, and the pairing code are tested"
 
+# A development build must not share a state directory with the installed app:
+# pairing writes a TLS identity, and damaging the real one makes every phone
+# the developer owns fail with a pin mismatch that has no override.
+(cd desktop && go build -tags dev ./internal/... >/dev/null 2>&1) \
+    || fail "desktop/internal does not build as a development build"
+(cd desktop && go test -count=1 -tags dev ./internal/settings/ >/dev/null) \
+    || fail "the development build shares state with the installed app"
+pass "a development build keeps its own state directory"
+
 echo "==> typechecking the window"
 (cd desktop/frontend && npm ci --no-audit --no-fund >/dev/null 2>&1) \
     || fail "the window's dependencies would not install"
@@ -98,6 +107,14 @@ pass "the page typechecks under strict mode"
 
 (cd desktop/frontend && npm run --silent build >/dev/null) || fail "the page does not build"
 pass "the page builds"
+
+# The Go gate below proves the receiver works. These prove the *window* does:
+# that it shows what happened, says what to do next, and renders a filename
+# that came off a phone as text rather than as markup.
+echo "==> what the window shows"
+(cd desktop/frontend && npm run --silent test >/dev/null) \
+    || fail "the window's own tests failed"
+pass "the screens a first-time user sees are tested"
 
 # ---------------------------------------------------------------------------
 # The gate itself, driven through the app's own bindings
@@ -123,12 +140,15 @@ echo
 cat <<'MESSAGE'
 P6 gate: PASS, as far as a script can take it.
 
-What is left is the half that is a person, and it needs one who has not seen
-the app before:
+Checked here: the receiver works, and the window shows what it is doing. What
+is not checked, and cannot be, is whether the wording and the layout are
+enough for somebody who has never seen it -- which is what the gate says.
 
-  1. cd desktop && wails build
+That needs one person who has not seen the app before:
+
+  1. cd desktop/frontend && npm ci && npm run build && cd .. && wails build
   2. hand them the built app and a phone with Geda Transfer on it
-  3. say nothing
+  3. say only "send a photo from the phone to this computer", then say nothing
   4. watch: do they pair, send a photo, and find it on disk?
   5. record what they got stuck on in docs/PERFORMANCE.md
 

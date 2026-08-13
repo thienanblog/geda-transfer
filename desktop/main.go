@@ -79,8 +79,15 @@ func run(background bool) error {
 
 	sh := &shell{app: application, log: log}
 
+	title := "Geda Transfer"
+	if settings.IsDev() {
+		// So a developer can tell at a glance which window is which, and does
+		// not report a bug against the wrong one.
+		title += " (dev)"
+	}
+
 	return wails.Run(&options.App{
-		Title:  "Geda Transfer",
+		Title:  title,
 		Width:  1040,
 		Height: 720,
 		// Small enough for half a laptop screen. Below this the transfer list
@@ -108,7 +115,10 @@ func run(background bool) error {
 		// instead, which is also what a user double-clicking the icon while it
 		// is already running expects.
 		SingleInstanceLock: &options.SingleInstanceLock{
-			UniqueId:               "app.geda.transfer",
+			// Qualified by the build variant so a `wails dev` run and the
+			// installed app do not lock each other out -- they have separate
+			// state and are separate programs as far as this is concerned.
+			UniqueId:               "app.geda.transfer" + settings.Variant(),
 			OnSecondInstanceLaunch: sh.secondInstance,
 		},
 

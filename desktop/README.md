@@ -35,11 +35,18 @@ cd .. && wails build
 `go build ./...` alone will fail until the page has been built once: the binary
 embeds `frontend/dist`, which is generated and not checked in.
 
-To point a run at a throwaway state directory rather than the real one:
+`wails dev` already keeps its own state: it compiles with the `dev` build tag,
+which puts the ledger in `geda-dev`, qualifies the single-instance lock, and
+titles the window "(dev)". A development run therefore cannot pair a phone into
+— or damage the identity of — the app you actually use.
+
+To point a run somewhere else again:
 
 ```
 GEDA_STATE_DIR=/tmp/geda-test wails dev
 ```
+
+`GEDA_STATE_DIR` is used exactly as given, with no `-dev` suffix.
 
 ## State
 
@@ -68,7 +75,14 @@ The output is committed. A build must not need this to have been run.
 ## Testing
 
 ```
-go test ./...                  # the live view, the settings, the pairing code
+go test ./...                       # the live view, the settings, the pairing code
+go test -tags dev ./internal/settings/   # a dev build keeps its own state
 cd frontend && npm run typecheck
-../scripts/verify-p6.sh        # the phase gate, from the repository root
+cd frontend && npm test             # what the window shows a person
+../scripts/verify-p6.sh             # the phase gate, from the repository root
 ```
+
+The window's tests run the real view code in jsdom against a stubbed bridge.
+They cover what the Go gate cannot: that a first-time user is told what to do
+next, that "already had it" is not reported as "stored", and that a filename
+which came off a phone is rendered as text and never as markup.
