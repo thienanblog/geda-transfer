@@ -54,6 +54,7 @@ import (
 	"github.com/geda/geda-transfer/core/formats"
 	"github.com/geda/geda-transfer/core/hash"
 	"github.com/geda/geda-transfer/core/pairing"
+	"github.com/geda/geda-transfer/core/receiver"
 	"github.com/geda/geda-transfer/core/service"
 	"github.com/geda/geda-transfer/core/storage"
 )
@@ -388,8 +389,12 @@ func (u *uploader) send(
 		metadata[k] = v
 	}
 
+	// receiver.UploadPath, not a string of its own: the path carries a
+	// trailing slash, and posting to the slashless form reaches the handler
+	// only through the mux's redirect -- which can arrive as a GET and be
+	// refused with a 405 that says nothing about the cause.
 	create, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		u.client.URL("/v1/files"), nil)
+		u.client.URL(receiver.UploadPath), nil)
 	if err != nil {
 		return "", err
 	}

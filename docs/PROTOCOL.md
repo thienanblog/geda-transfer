@@ -302,8 +302,10 @@ documented here.
 
 ### 5.1 Creation
 
-`POST /v1/files` with `Upload-Length` and `Upload-Metadata`. Metadata keys are
-base64-encoded per tus:
+`POST /v1/files/` with `Upload-Length` and `Upload-Metadata`. The trailing
+slash is canonical and is what every shipped client sends; `/v1/files` is
+routed explicitly too, so a client that omits it is answered rather than
+redirected. Metadata keys are base64-encoded per tus:
 
 | Key | Meaning |
 |---|---|
