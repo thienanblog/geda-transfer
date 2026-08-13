@@ -15,14 +15,15 @@
 // The user's preferences.
 //
 // Every one of them works with zero configuration and every destructive one is
-// off (AGENTS.md §4). There is exactly one so far, and it is Advanced: whether
-// photos and videos that arrive from a computer go to the Photo Library, where
-// people look for them, or to this app's Files container, where they do not.
+// off (AGENTS.md §4). Two groups so far: where files that arrive from a
+// computer are put, and which parts of each photo are sent to one.
 
 import { DEFAULT_INBOX_SETTINGS, type InboxSettings } from '../core/inbox';
+import { DEFAULT_SEND_OPTIONS, type SendOptions } from '../core/selection';
 import { db } from './db';
 
 const SAVE_MEDIA_TO_FILES = 'inbox.saveMediaToFiles';
+const SEND_OPTIONS = 'send.options';
 
 export async function loadInboxSettings(): Promise<InboxSettings> {
   try {
@@ -39,12 +40,60 @@ export async function loadInboxSettings(): Promise<InboxSettings> {
 }
 
 export async function setSaveMediaToFiles(value: boolean): Promise<void> {
+  await put(SAVE_MEDIA_TO_FILES, value ? '1' : '0');
+}
+
+/**
+ * Which parts of each asset to send.
+ *
+ * Stored as one JSON value rather than a column per option: this is a group of
+ * choices the user makes together, and a half-written group is worse than none
+ * of it. Every field is merged over the defaults on read, so a preference file
+ * written by an older version gains the new options at their defaults rather
+ * than turning them off.
+ */
+export async function loadSendOptions(): Promise<SendOptions> {
+  try {
+    const row = await (
+      await db()
+    ).getFirstAsync<{ value: string }>('SELECT value FROM settings WHERE key = ?', SEND_OPTIONS);
+    if (!row?.value) return DEFAULT_SEND_OPTIONS;
+    return mergeSendOptions(JSON.parse(row.value));
+  } catch {
+    // Unreadable or unparseable: back up everything, which is the answer that
+    // cannot lose a photo.
+    return DEFAULT_SEND_OPTIONS;
+  }
+}
+
+export async function setSendOptions(options: SendOptions): Promise<void> {
+  await put(SEND_OPTIONS, JSON.stringify(options));
+}
+
+/** Takes only the fields it recognises, at values it recognises. */
+export function mergeSendOptions(stored: unknown): SendOptions {
+  const out = { ...DEFAULT_SEND_OPTIONS };
+  if (typeof stored !== 'object' || stored === null) return out;
+  const raw = stored as Record<string, unknown>;
+
+  if (typeof raw.livePhotoVideo === 'boolean') out.livePhotoVideo = raw.livePhotoVideo;
+  if (typeof raw.screenshots === 'boolean') out.screenshots = raw.screenshots;
+  if (typeof raw.hidden === 'boolean') out.hidden = raw.hidden;
+  if (raw.edits === 'edited' || raw.edits === 'original' || raw.edits === 'both') {
+    out.edits = raw.edits;
+  }
+  if (raw.raw === 'both' || raw.raw === 'raw' || raw.raw === 'jpeg') out.raw = raw.raw;
+  if (raw.bursts === 'picks' || raw.bursts === 'all') out.bursts = raw.bursts;
+  return out;
+}
+
+async function put(key: string, value: string): Promise<void> {
   await (
     await db()
   ).runAsync(
     `INSERT INTO settings (key, value) VALUES (?, ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-    SAVE_MEDIA_TO_FILES,
-    value ? '1' : '0',
+    key,
+    value,
   );
 }

@@ -338,10 +338,36 @@ several `PHAssetResource`s:
 So:
 
 ```
-pair_id   = BLAKE3(PHAsset.localIdentifier)[:16]   // stable, does not leak the id
-pair_role = primary    for .photo
-            secondary  for .pairedVideo / .alternatePhoto
+pair_id   = derived from PHAsset.localIdentifier   // stable for the life of the asset
+pair_role = primary    the first resource chosen for the asset
+            secondary  every other resource of the same asset
 ```
+
+`pair_role` is **not** derivable from `kind`. A RAW+JPEG pair is two photos,
+and an edited photo sent beside its untouched original is two photos as well,
+so "the video is the secondary one" is not a rule. The sender decides, and the
+receiver only needs the two roles to be distinct within a `pair_id`.
+
+A client that sends two `primary` members is not rejected: the pair still
+shares one basename and the members still differ by extension. A member with no
+role at all is treated as `primary`, because a pair with no primary would be
+worse than a pair with two.
+
+#### Which resources a client sends
+
+Up to the client, and a user setting on iOS. What the protocol requires is only
+this:
+
+- Every resource of one asset that is sent **must** carry the same `pair_id`,
+  so they share a basename. A lone resource may omit `pair_id` entirely.
+- Each resource carries **its own** `filename`. `IMG_0042.HEIC` and
+  `IMG_0042.DNG` are different files and must not arrive under one name: the
+  receiver takes the extension from here.
+- Resources are sent as they exist on the device. **A client must never
+  transcode** (AGENTS.md §3.3); if the user wants a different format, the
+  receiver produces it after receipt and the wire is not involved.
+
+`.adjustmentData` — the edit recipe — is not a photograph and is never sent.
 
 #### Allocating the basename on the receiver
 
@@ -404,6 +430,14 @@ intends to delete its local copy **must** send it.
 
 **A file is only eligible for delete-after-transfer once the receiver has
 confirmed a full-hash match.** No exceptions.
+
+`Geda-Stored-Path` names the file **as received**. A receiver configured to
+convert may later write another file beside it, or — under the space-saving
+preset — replace it. Neither changes what this header said, and neither happens
+before the response is sent: conversion is a queue behind the transfer, not a
+step inside it (docs/DECISIONS.md). A receiver that has removed a received
+original records that it can no longer prove it holds those bytes, and that
+file stops being eligible for delete-after-transfer regardless of its hash.
 
 ---
 

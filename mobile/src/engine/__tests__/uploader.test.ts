@@ -21,6 +21,7 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { NO_FLAGS } from '../../core/selection';
 import type { Asset, Receiver } from '../../core/types';
 
 const native = {
@@ -102,10 +103,13 @@ vi.mock('../../../modules/geda-transfer', () => ({
 
 const ledger = {
   sent: new Map<string, string>(),
+  /** Makes the ledger unreadable, so `run` throws after resolving. */
+  failKeys: false,
 };
 
 vi.mock('../../data/ledger', () => ({
   async sentKeys() {
+    if (ledger.failKeys) throw new Error('the ledger could not be read');
     return new Set(ledger.sent.keys());
   },
   async recordSent(_receiverId: string, asset: Asset, storedPath: string) {
@@ -116,17 +120,27 @@ vi.mock('../../data/ledger', () => ({
 
 vi.mock('../../media/library', () => ({
   AssetUnavailableError: class extends Error {},
+  release: (asset: Asset) => {
+    if (asset.staged) released.push(asset.filePath);
+  },
+  // One summary resolves to one file here unless the test says otherwise: the
+  // several-resources case is `extraResources`, set per test.
   async resolveAsset(summary: { id: string; filename: string; kind: 'photo' | 'video' }) {
     if (summary.id === 'in-icloud') throw new Error('is in iCloud and not on this device');
-    return {
+    const primary: Asset = {
       id: summary.id,
       filename: summary.filename,
       filePath: `/tmp/${summary.filename}`,
       size: sizes[summary.id] ?? 1_000_000,
       kind: summary.kind,
-    } satisfies Asset;
+    };
+    return [primary, ...(extraResources[summary.id] ?? [])];
   },
 }));
+
+/** Extra resources one asset resolves to, keyed by asset id. */
+let extraResources: Record<string, Asset[]> = {};
+let released: string[] = [];
 
 vi.mock('../session', () => ({
   async connect() {
@@ -152,12 +166,16 @@ function summaries(count: number) {
     filename: `IMG_${index}.HEIC`,
     kind: 'photo' as const,
     capturedAt: Date.UTC(2026, 6, 4),
+    flags: NO_FLAGS,
   }));
 }
 
 const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 beforeEach(() => {
+  extraResources = {};
+  released = [];
+  ledger.failKeys = false;
   native.uploads = [];
   native.listeners.clear();
   native.gates.clear();
@@ -184,6 +202,102 @@ describe('Transfer', () => {
     expect(ledger.sent.size).toBe(12);
     // The measurement the gate is built from has to be a real elapsed time.
     expect(result.transferMs).toBeGreaterThanOrEqual(0);
+  });
+
+  // One asset in the library is often several files. A Live Photo that sent
+  // only its still would arrive as a photograph that no longer moves.
+  it('sends every file an asset resolves to', async () => {
+    extraResources['asset-0'] = [
+      {
+        id: 'asset-0',
+        filename: 'IMG_0.MOV',
+        filePath: '/cache/geda-resources/asset-0-pairedVideo-IMG_0.MOV',
+        size: 4_000_000,
+        kind: 'video',
+        pairId: 'asset-0',
+        pairRole: 'secondary',
+        resourceType: 'pairedVideo',
+        staged: true,
+      },
+    ];
+
+    const { Transfer } = await import('../uploader');
+    const result = await new Transfer({ receiver, onChange: () => {} }).run(summaries(2));
+
+    expect(result.filesTotal).toBe(3);
+    expect(result.filesDone).toBe(3);
+    expect(ledger.sent.size).toBe(3);
+  });
+
+  // A copy made to reach a Live Photo's video is this transfer's to delete.
+  // Left behind, one library import fills the phone with a second copy of
+  // everything it just sent.
+  it('deletes the copies it made once they have been sent', async () => {
+    extraResources['asset-0'] = [
+      {
+        id: 'asset-0',
+        filename: 'IMG_0.MOV',
+        filePath: '/cache/geda-resources/asset-0-pairedVideo-IMG_0.MOV',
+        size: 4_000_000,
+        kind: 'video',
+        pairRole: 'secondary',
+        resourceType: 'pairedVideo',
+        staged: true,
+      },
+    ];
+
+    const { Transfer } = await import('../uploader');
+    await new Transfer({ receiver, onChange: () => {} }).run(summaries(1));
+
+    expect(released).toEqual(['/cache/geda-resources/asset-0-pairedVideo-IMG_0.MOV']);
+  });
+
+  // An asset the receiver already has was still copied out of the library to
+  // be looked at, and it is skipped rather than sent -- so nothing else would
+  // ever delete it.
+  it('deletes copies for resources the receiver already has', async () => {
+    ledger.sent.set('asset-0:pairedVideo:4000000', 'already/there.MOV');
+    extraResources['asset-0'] = [
+      {
+        id: 'asset-0',
+        filename: 'IMG_0.MOV',
+        filePath: '/cache/geda-resources/asset-0-pairedVideo-IMG_0.MOV',
+        size: 4_000_000,
+        kind: 'video',
+        pairRole: 'secondary',
+        resourceType: 'pairedVideo',
+        staged: true,
+      },
+    ];
+
+    const { Transfer } = await import('../uploader');
+    const result = await new Transfer({ receiver, onChange: () => {} }).run(summaries(1));
+
+    expect(result.alreadyThere).toBe(1);
+    expect(released).toEqual(['/cache/geda-resources/asset-0-pairedVideo-IMG_0.MOV']);
+  });
+
+  // A cancelled run that kept its copies would fill the phone with a second
+  // copy of a library it never sent.
+  it('deletes its copies even when the transfer fails outright', async () => {
+    extraResources['asset-0'] = [
+      {
+        id: 'asset-0',
+        filename: 'IMG_0.MOV',
+        filePath: '/cache/geda-resources/asset-0-pairedVideo-IMG_0.MOV',
+        size: 4_000_000,
+        kind: 'video',
+        pairRole: 'secondary',
+        resourceType: 'pairedVideo',
+        staged: true,
+      },
+    ];
+    ledger.failKeys = true;
+
+    const { Transfer } = await import('../uploader');
+    await expect(new Transfer({ receiver, onChange: () => {} }).run(summaries(1))).rejects.toThrow();
+
+    expect(released).toEqual(['/cache/geda-resources/asset-0-pairedVideo-IMG_0.MOV']);
   });
 
   it('keeps the agreed number of streams in flight', async () => {
@@ -243,7 +357,7 @@ describe('Transfer', () => {
     const engine = new Transfer({ receiver, onChange: () => {} });
 
     const result = await engine.run([
-      { id: 'in-icloud', filename: 'IMG_1.HEIC', kind: 'photo' as const },
+      { id: 'in-icloud', filename: 'IMG_1.HEIC', kind: 'photo' as const, flags: NO_FLAGS },
       ...summaries(2),
     ]);
 

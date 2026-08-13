@@ -22,6 +22,18 @@ import { NativeModule, requireNativeModule } from 'expo';
 
 import type { BackgroundJob } from '../../src/core/background';
 import type { DownloadJob } from '../../src/core/inbox';
+import type { AssetFlags, Resource, ResourceType } from '../../src/core/selection';
+
+/** One asset's flags, as the native side reports them. */
+export type NativeAssetFlags = AssetFlags & { id: string };
+
+/** A hidden asset: its flags, plus enough to list it. */
+export type NativeHiddenAsset = NativeAssetFlags & {
+  filename: string;
+  kind: 'photo' | 'video';
+  /** Milliseconds, or 0 when iOS recorded no capture date. */
+  capturedAt: number;
+};
 
 export type UploadProgressEvent = {
   uploadId: string;
@@ -220,6 +232,30 @@ declare class GedaTransferModule extends NativeModule<GedaTransferEvents> {
   failDownload(itemId: string, reason: string): void;
 
   cancelDownloads(): void;
+
+  /**
+   * The flags that decide whether an asset is sent at all.
+   *
+   * `expo-media-library` reports none of them, and every one is a send option
+   * (docs/PLAN.md P8). Cheap for a whole library: these are properties
+   * `PHAsset` already holds in memory.
+   */
+  assetFlags(assetIds: string[]): Promise<NativeAssetFlags[]>;
+
+  /** Hidden assets, which an ordinary library query does not return. */
+  hiddenAssets(limit: number): Promise<NativeHiddenAsset[]>;
+
+  /** Every resource one asset holds: still, motion, negative, render. */
+  assetResources(assetId: string): Promise<Resource[]>;
+
+  /**
+   * Copies one resource out of the library and returns its size in bytes.
+   *
+   * Only for resources with no plain file URL behind them. The ordinary photo
+   * still goes straight from the library with no copy, which is what keeps
+   * the measured baseline (docs/PERFORMANCE.md).
+   */
+  exportResource(assetId: string, type: ResourceType, destination: string): Promise<number>;
 
   /**
    * The SHA-256 of a file on disk, computed natively.

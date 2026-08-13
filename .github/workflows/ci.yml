@@ -129,7 +129,8 @@ jobs:
           cd modules/geda-transfer/ios
           swiftc -typecheck -sdk "$SDK" -target arm64-apple-ios16.4 \
             SPKIPin.swift PinnedClient.swift Tus.swift BackgroundStore.swift \
-            BackgroundUploader.swift LiveActivity.swift GedaTransferAttributes.swift
+            BackgroundUploader.swift LiveActivity.swift GedaTransferAttributes.swift \
+            DownloadStore.swift BackgroundDownloader.swift AssetLibrary.swift
           cd -
           swiftc -typecheck -sdk "$SDK" -target arm64-apple-ios16.4 \
             ios-extensions/GedaLiveActivity/GedaLiveActivity.swift \
@@ -328,6 +329,35 @@ jobs:
       # interruption and the resume, is the same at either size -- and the
       # 2 GiB run is what the phase is signed off on locally.
       - run: ./scripts/verify-p7.sh --size 536870912
+
+  gate-p8:
+    name: phase gate P8
+    # Ubuntu: unlike P5 and P7, P8's gate needs no iOS SDK to prove its
+    # sentence -- both halves are properties of the receiver. The native
+    # sources are typechecked in the `mobile` job on macOS, and the script
+    # skips them here.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: core/go.mod
+          cache-dependency-path: core/go.sum
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      # A Live Photo pair and a ProRAW negative through a real receiver under
+      # every preset, twice: once with no converter installed and once with
+      # one. The second run is the only configuration in which "space-saving
+      # did not delete half a Live Photo" means anything.
+      #
+      # A stand-in converter rather than a real ffmpeg, on purpose: what is
+      # being gated is which file the receiver writes and which original it
+      # keeps, and that must hold on every machine.
+      - run: ./scripts/verify-p8.sh
 
 
   licence:

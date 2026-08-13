@@ -79,8 +79,41 @@ Nothing is required. `gedad run` with no configuration works.
 | `advertise_port` | the listen port | Only set behind a port mapping. |
 | `discovery` / `mdns` | on | The L1–L2 layers; unicast keeps working without them. |
 | `naming_template` | see AGENTS.md §3.6 | Validated at startup, then stored in the ledger. |
+| `output_preset` | leaves the ledger alone | `original`, `compatible`, `space-saving`, `custom` — see below. |
+| `output_matrix` | — | `heic=sidecar,video=replace`. Only with `output_preset = custom`. |
 | `control_socket` | `<state_dir>/gedad.sock` | |
 | `log_level` | `info` | |
+
+### Converting after receipt
+
+The phone always sends originals; anything that gets converted is converted
+here, after the bytes are on disk (AGENTS.md §3.3). Conversion never blocks,
+slows, or fails a transfer, and a box with no `ffmpeg` receives exactly as well
+as one with — it simply converts nothing and says so in `gedad status`.
+
+| Preset | HEIC photos | Videos | Raw negatives | Everything else |
+|---|---|---|---|---|
+| `original` (default) | kept | kept | kept | kept |
+| `compatible` | JPEG **beside** the original | H.264 beside the original | kept | kept |
+| `space-saving` | JPEG **replaces** the original | H.264 replaces the original | kept | kept |
+
+Three things no setting can change:
+
+- **A raw negative is never converted.** A ProRAW DNG keeps its bytes and its
+  extension under every preset.
+- **A member of a Live Photo or RAW+JPEG pair is never replaced**, only
+  converted alongside — half a converted pair is a still that no longer moves.
+- **A file sent as a file** — a ZIP, a PDF, a video project's assets — is never
+  touched, whatever it is called.
+
+`space-saving` deletes received originals once the converted copy is written.
+A file whose original was removed can no longer be proved to be held, so it is
+never eligible to authorise deleting the phone's copy.
+
+Install the converters with your package manager: `ffmpeg` for video,
+`libheif` (the `heif-convert` binary) for HEIC. `GEDA_FFMPEG`,
+`GEDA_FFPROBE`, and `GEDA_HEIF_CONVERT` override the search with an explicit
+path.
 
 ### The state directory must survive updates
 

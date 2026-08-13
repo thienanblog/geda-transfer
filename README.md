@@ -20,7 +20,9 @@ moves your files directly between devices on your own network.
   collects them when you open the app — continuing in the background after you
   put it down. Photos and videos land in your library, everything else in Files.
 - **Originals by default**: HEIC stays HEIC, ProRAW stays DNG, Live Photos stay
-  paired. Format conversion happens on your computer, not on your phone.
+  paired. If you want a JPEG or an H.264 copy, your computer makes one after
+  the files arrive — on a real CPU, without draining your phone's battery, and
+  without touching the original unless you explicitly ask it to.
 - **Works across subnets and over VPN**: discovery is not limited to your local
   broadcast domain (see below).
 - **Runs headless**: a CLI daemon and Docker image for NAS.

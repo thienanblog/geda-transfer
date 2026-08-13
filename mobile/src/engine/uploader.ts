@@ -29,11 +29,17 @@ import GedaTransfer, {
 } from '../../modules/geda-transfer';
 import { uploadMetadata, buildPlan } from '../core/plan';
 import { mapPool } from '../core/pool';
+import { DEFAULT_SEND_OPTIONS, type SendOptions } from '../core/selection';
 import { WorkQueue, isAbort } from '../core/queue';
 import { ThroughputMeter } from '../core/throughput';
 import type { Asset, Receiver, TransferItem } from '../core/types';
 import { recordSent, sentKeys } from '../data/ledger';
-import { AssetUnavailableError, resolveAsset, type AssetSummary } from '../media/library';
+import {
+  AssetUnavailableError,
+  release,
+  resolveAsset,
+  type AssetSummary,
+} from '../media/library';
 import { connect } from './session';
 
 /**
@@ -71,12 +77,15 @@ export type TransferSnapshot = {
 export type TransferOptions = {
   receiver: Receiver;
   concurrency?: number;
+  /** Which parts of each asset to send. Defaults to sending the most. */
+  send?: SendOptions;
   onChange: (snapshot: TransferSnapshot) => void;
 };
 
 export class Transfer {
   private readonly receiver: Receiver;
   private readonly concurrency: number;
+  private readonly sendOptions: SendOptions;
   private readonly onChange: (snapshot: TransferSnapshot) => void;
 
   private items: TransferItem[] = [];
@@ -96,23 +105,39 @@ export class Transfer {
   constructor(options: TransferOptions) {
     this.receiver = options.receiver;
     this.concurrency = Math.min(Math.max(options.concurrency ?? DEFAULT_CONCURRENCY, 1), 8);
+    this.sendOptions = options.send ?? DEFAULT_SEND_OPTIONS;
     this.onChange = options.onChange;
   }
 
-  /** Runs a whole transfer: prepare, then send. Resolves when it has finished. */
+  /**
+   * Runs a whole transfer: prepare, then send. Resolves when it has finished.
+   *
+   * Every copy this made is deleted on the way out, by whichever way it
+   * leaves. A copy made to reach a Live Photo's video is tens of megabytes,
+   * and a cancelled run that kept them would fill the phone with a second copy
+   * of a library it never sent.
+   */
   async run(summaries: AssetSummary[]): Promise<TransferSnapshot> {
-    this.baseUrl = await connect(this.receiver);
+    let resolved: Asset[] = [];
+    try {
+      this.baseUrl = await connect(this.receiver);
 
-    const assets = await this.prepare(summaries);
-    if (this.phase === 'cancelled') return this.snapshot();
+      resolved = await this.prepare(summaries);
+      if (this.phase === 'cancelled') return this.snapshot();
 
-    const plan = buildPlan(assets, { alreadySent: await sentKeys(this.receiver.deviceId) });
-    this.alreadyThere = plan.skipped.length;
-    this.items = plan.items.map((asset) => ({ asset, state: 'queued', bytesSent: 0 }));
-    this.emit();
+      const plan = buildPlan(resolved, { alreadySent: await sentKeys(this.receiver.deviceId) });
+      this.alreadyThere = plan.skipped.length;
+      this.items = plan.items.map((asset) => ({ asset, state: 'queued', bytesSent: 0 }));
+      this.emit();
 
-    await this.transfer();
-    return this.snapshot();
+      await this.transfer();
+      return this.snapshot();
+    } finally {
+      // `resolved` and not `this.items`: an asset the receiver already had
+      // was still copied out of the library to be looked at, and it is
+      // skipped rather than sent, so nothing else would ever delete it.
+      for (const asset of resolved) release(asset);
+    }
   }
 
   pause(): void {
@@ -168,13 +193,15 @@ export class Transfer {
     this.emit();
 
     const startedAt = Date.now();
-    const resolved = await mapPool(summaries, resolveAsset, {
+    // One summary can resolve to several files -- a Live Photo is a still and
+    // a video -- so the results are flattened rather than paired up.
+    const resolved = await mapPool(summaries, (summary) => resolveAsset(summary, this.sendOptions), {
       shouldContinue: () => this.phase === 'preparing',
       onError: (error, summary) => this.note(error, summary.filename),
     });
 
     this.prepareMs = Date.now() - startedAt;
-    return resolved;
+    return resolved.flat();
   }
 
   // MARK: transfer

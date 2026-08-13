@@ -773,6 +773,42 @@ h2 {
   max-width: 130px;
 }
 
+/* --- output presets ----------------------------------------------------- */
+
+.output-notice {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+/* Missing converters are worth noticing but are not an error: the files
+   arrived and were stored, they were simply not converted. */
+.output-notice.is-bad {
+  color: var(--bad);
+}
+
+.settings-matrix[open] {
+  gap: 14px;
+}
+
+.matrix {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.matrix-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 12px;
+  row-gap: 3px;
+}
+
+.matrix-row .field-hint {
+  grid-column: 1 / -1;
+}
+
 .preview.is-bad {
   color: var(--bad);
 }

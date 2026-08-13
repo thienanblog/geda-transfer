@@ -15,22 +15,34 @@
 import { useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 
+import {
+  DEFAULT_SEND_OPTIONS,
+  describeExclusions,
+  selectAssets,
+  type SendOptions,
+} from '../core/selection';
 import type { Receiver } from '../core/types';
 import GedaTransfer from '../../modules/geda-transfer';
 import { startBackgroundTransfer } from '../engine/background';
 import { checkInbox, type CheckResult } from '../engine/inbox';
 import { forgetReceiver } from '../data/receivers';
-import { loadInboxSettings, setSaveMediaToFiles } from '../data/settings';
+import {
+  loadInboxSettings,
+  loadSendOptions,
+  setSaveMediaToFiles,
+  setSendOptions,
+} from '../data/settings';
 import { checkAccess, listAssets, requestAccess, type AssetSummary } from '../media/library';
 import { BackgroundCard, useBackgroundTransfers } from './BackgroundCard';
 import { InboxCard, useInbox } from './InboxCard';
-import { Button, Card, Muted, Screen } from './components';
+import { Button, Card, Choice, Muted, Screen } from './components';
 import { colors, spacing } from './theme';
 
 export type SendRequest = {
   receiver: Receiver;
   summaries: AssetSummary[];
   keepAwake: boolean;
+  send: SendOptions;
 };
 
 export function HomeScreen({
@@ -56,28 +68,43 @@ export function HomeScreen({
   const [checking, setChecking] = useState(false);
   const [checked, setChecked] = useState<string>();
   const [saveToFiles, setSaveToFiles] = useState(false);
+  const [send, setSend] = useState<SendOptions>(DEFAULT_SEND_OPTIONS);
   const background = useBackgroundTransfers();
   const inbox = useInbox(receivers);
 
   useEffect(() => {
     void loadInboxSettings().then((settings) => setSaveToFiles(settings.saveMediaToFiles));
+    void loadSendOptions().then(setSend);
   }, []);
 
   useEffect(() => {
     void (async () => setAccess(await checkAccess()))();
   }, []);
 
+  // Re-listed when "send hidden photos" changes: hidden assets are not in an
+  // ordinary library query at all, so the listing itself has to ask for them.
   useEffect(() => {
     if (access !== 'granted' && access !== 'limited') return;
     setLoading(true);
     void (async () => {
       try {
-        setSummaries(await listAssets());
+        setSummaries(await listAssets({ includeHidden: send.hidden }));
       } finally {
         setLoading(false);
       }
     })();
-  }, [access]);
+  }, [access, send.hidden]);
+
+  // What the send options actually leave out of this library, recomputed as
+  // they change. The count on screen has to be the count that will be sent.
+  const selection = selectAssets(summaries, send);
+  const skipping = describeExclusions(selection.counts);
+
+  const change = (next: Partial<SendOptions>): void => {
+    const merged = { ...send, ...next };
+    setSend(merged);
+    void setSendOptions(merged);
+  };
 
   const receiver = receivers.find((entry) => entry.deviceId === selected) ?? receivers[0];
 
@@ -93,7 +120,11 @@ export function HomeScreen({
     setHandingOver(true);
     setHandOver(undefined);
     try {
-      const result = await startBackgroundTransfer({ receiver, summaries });
+      const result = await startBackgroundTransfer({
+        receiver,
+        summaries: selection.send,
+        send,
+      });
       background.refresh();
       setHandOver(describeHandOver(result, GedaTransfer.liveActivitiesAvailable()));
     } catch (error) {
@@ -176,8 +207,14 @@ export function HomeScreen({
           ) : (
             <>
               <Text style={styles.count}>
-                {loading ? 'Counting…' : `${summaries.length.toLocaleString()} items`}
+                {loading ? 'Counting…' : `${selection.send.length.toLocaleString()} items`}
               </Text>
+              {/*
+                Nothing is left out silently. Somebody who turned off
+                screenshots and then counted their photos has to be able to
+                see where the difference went.
+              */}
+              {!loading && skipping ? <Muted>{skipping}</Muted> : null}
               {access === 'limited' ? (
                 <Muted>
                   You granted access to selected photos only, so this is what the app can see. You
@@ -232,6 +269,88 @@ export function HomeScreen({
         </Card>
 
         <Card>
+          <Text style={styles.heading}>What to send</Text>
+          <Muted>
+            One photo in your library is often several files. Originals always: nothing is
+            converted on the phone -- that happens on the computer, where it is faster and does not
+            cost battery.
+          </Muted>
+
+          <View style={styles.switchRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.rowTitle}>Live Photos keep their motion</Text>
+              <Muted>Sends the short video alongside the still, so it stays a Live Photo.</Muted>
+            </View>
+            <Switch
+              value={send.livePhotoVideo}
+              onValueChange={(value) => change({ livePhotoVideo: value })}
+            />
+          </View>
+
+          <Choice
+            label="Edited photos"
+            value={send.edits}
+            options={[
+              ['edited', 'As edited'],
+              ['original', 'Original'],
+              ['both', 'Both'],
+            ]}
+            hint="The edited version is what you see in Photos. Both sends the untouched capture too."
+            onChange={(value) => change({ edits: value })}
+          />
+
+          <Choice
+            label="RAW and ProRAW"
+            value={send.raw}
+            options={[
+              ['both', 'Both'],
+              ['raw', 'Negative only'],
+              ['jpeg', 'JPEG only'],
+            ]}
+            hint="The negative is never converted, here or on the computer. A DNG arrives as a DNG."
+            onChange={(value) => change({ raw: value })}
+          />
+
+          <Choice
+            label="Bursts"
+            value={send.bursts}
+            options={[
+              ['picks', 'Picked frames'],
+              ['all', 'Every frame'],
+            ]}
+            hint="A burst is dozens of near-identical frames. Every frame multiplies the transfer."
+            onChange={(value) => change({ bursts: value })}
+          />
+
+          <View style={styles.switchRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.rowTitle}>Screenshots</Text>
+              <Muted>Screenshots are in your library like any other photo.</Muted>
+            </View>
+            <Switch
+              value={send.screenshots}
+              onValueChange={(value) => change({ screenshots: value })}
+            />
+          </View>
+
+          {/*
+            The one option that defaults to sending less. Somebody hid those
+            photos on purpose, and a backup that quietly un-hides them onto a
+            shared family computer is its own kind of data loss.
+          */}
+          <View style={styles.switchRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.rowTitle}>Hidden photos</Text>
+              <Muted>
+                Off. Photos you hid stay on this phone unless you turn this on. They arrive on the
+                computer as ordinary files, in the ordinary folder.
+              </Muted>
+            </View>
+            <Switch value={send.hidden} onValueChange={(value) => change({ hidden: value })} />
+          </View>
+        </Card>
+
+        <Card>
           <View style={styles.switchRow}>
             <View style={{ flex: 1 }}>
               <Text style={styles.rowTitle}>Keep the screen on</Text>
@@ -246,14 +365,16 @@ export function HomeScreen({
 
         <Button
           label={receiver ? `Send to ${receiver.name}` : 'Pair a receiver first'}
-          disabled={!receiver || summaries.length === 0}
-          onPress={() => receiver && onSend({ receiver, summaries, keepAwake })}
+          disabled={!receiver || selection.send.length === 0}
+          onPress={() =>
+            receiver && onSend({ receiver, summaries: selection.send, keepAwake, send })
+          }
         />
 
         <Button
           label={handingOver ? 'Handing over to iOS…' : 'Send in the background'}
           tone="quiet"
-          disabled={!receiver || summaries.length === 0 || handingOver}
+          disabled={!receiver || selection.send.length === 0 || handingOver}
           onPress={() => void sendInBackground()}
         />
 

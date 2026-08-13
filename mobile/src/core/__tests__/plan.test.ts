@@ -98,12 +98,25 @@ describe('uploadMetadata', () => {
   });
 
   it('marks both members of a pair', () => {
-    const still = uploadMetadata(photo('a', 10, { pairId: 'live-1' }));
-    const movie = uploadMetadata(photo('b', 10, { pairId: 'live-1', kind: 'video' }));
+    // The role comes from the selection, not from the kind: a RAW+JPEG pair
+    // is two photos, and an edited photo sent beside its original is two
+    // photos as well, so "the video is the secondary one" is not a rule.
+    const still = uploadMetadata(photo('a', 10, { pairId: 'live-1', pairRole: 'primary' }));
+    const movie = uploadMetadata(
+      photo('b', 10, { pairId: 'live-1', kind: 'video', pairRole: 'secondary' }),
+    );
 
     expect(still.pair_id).toBe('live-1');
     expect(still.pair_role).toBe('primary');
     expect(movie.pair_id).toBe('live-1');
     expect(movie.pair_role).toBe('secondary');
+  });
+
+  it('defaults a pair member with no role to the primary', () => {
+    // Two primaries is a pair that shares a basename and has no order, which
+    // is harmless. A missing role that became "secondary" would be a pair
+    // with no primary at all.
+    const metadata = uploadMetadata(photo('a', 10, { pairId: 'live-1' }));
+    expect(metadata.pair_role).toBe('primary');
   });
 });

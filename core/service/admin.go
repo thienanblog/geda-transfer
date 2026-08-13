@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/geda/geda-transfer/core/formats"
 	"github.com/geda/geda-transfer/core/identity"
 	"github.com/geda/geda-transfer/core/naming"
 	"github.com/geda/geda-transfer/core/storage"
@@ -44,6 +45,32 @@ type Status struct {
 	PairedDevices int       `json:"paired_devices"`
 	Files         int       `json:"files"`
 	Bytes         int64     `json:"bytes"`
+
+	// Output is what this receiver does with the files it stores, and
+	// whether it can. On a headless box this is the only place the answer to
+	// "why is nothing being converted" exists.
+	Output OutputStatus `json:"output"`
+}
+
+// OutputStatus is the format-handling half of a receiver's status.
+type OutputStatus struct {
+	// Preset is the configured preset name.
+	Preset string `json:"preset"`
+
+	// Actions is what that preset resolves to, per file class. It is spelled
+	// out rather than left to the reader, because "compatible" does not say
+	// whether originals survive and that is the question people have.
+	Actions map[string]string `json:"actions"`
+
+	// Pending is how many files are queued or being converted.
+	Pending int `json:"pending"`
+
+	// Tools are the external converters found on this machine.
+	Tools formats.Tools `json:"tools"`
+
+	// Unavailable explains what is missing, when the policy needs something
+	// this machine does not have. Empty when there is nothing to say.
+	Unavailable string `json:"unavailable,omitempty"`
 }
 
 // Offer is a pairing invitation, ready to be drawn as a QR code.
@@ -129,6 +156,17 @@ func (s *Service) Status(ctx context.Context) (Status, error) {
 		return Status{}, fmt.Errorf("count files: %w", err)
 	}
 
+	policy := s.files.Policy(ctx)
+	pending, err := s.conversions.Pending(ctx)
+	if err != nil {
+		return Status{}, err
+	}
+
+	actions := make(map[string]string, len(formats.Classes))
+	for class, action := range policy.Effective() {
+		actions[string(class)] = string(action)
+	}
+
 	return Status{
 		Version:       s.cfg.Version,
 		DeviceID:      s.deviceID,
@@ -143,6 +181,13 @@ func (s *Service) Status(ctx context.Context) (Status, error) {
 		PairedDevices: devices,
 		Files:         files,
 		Bytes:         bytes.Int64,
+		Output: OutputStatus{
+			Preset:      policy.Preset,
+			Actions:     actions,
+			Pending:     pending,
+			Tools:       s.tools,
+			Unavailable: s.tools.Explain(policy),
+		},
 	}, nil
 }
 

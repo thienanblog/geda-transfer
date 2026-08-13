@@ -99,6 +99,76 @@ export interface Settings {
   autostart: boolean;
   onboarded: boolean;
   template: string;
+  output_preset: OutputPreset;
+  /** Only meaningful when output_preset is "custom". */
+  output_matrix?: Partial<Record<FileClass, OutputAction>> | null;
+}
+
+/** What the receiver does with the files it stores (docs/PLAN.md P8). */
+export type OutputPreset = "original" | "compatible" | "space-saving" | "custom";
+
+/** A family of received file, as far as conversion is concerned. */
+export type FileClass = "heic" | "video" | "raw" | "other";
+
+/**
+ * keep    leave the file exactly as it arrived
+ * sidecar write a converted copy beside it; both survive
+ * replace write the converted copy and remove the original
+ */
+export type OutputAction = "keep" | "sidecar" | "replace";
+
+export interface Tool {
+  name: string;
+  /** Empty when the tool is not installed. */
+  path: string;
+  version: string;
+}
+
+export interface Tools {
+  ffmpeg: Tool;
+  ffprobe: Tool;
+  heif_convert: Tool;
+}
+
+export interface OutputView {
+  presets: OutputPreset[];
+  classes: FileClass[];
+  actions: OutputAction[];
+  /** What the chosen preset resolves to, per class. */
+  effective: Record<string, OutputAction>;
+  tools: Tools;
+  /** Why nothing can be converted, for the *saved* preset. */
+  unavailable: string;
+  /**
+   * What has to be installed to convert each class, for the classes this
+   * machine cannot convert. Absent for a class it can.
+   *
+   * The window builds its own message from this, so the warning appears the
+   * moment a converting preset is picked rather than after it is saved.
+   */
+  missing: Partial<Record<FileClass, string>>;
+  /** How to install them on this platform. */
+  install: string;
+  pending: number;
+}
+
+export type ConversionState = "pending" | "running" | "done" | "skipped" | "failed";
+
+export interface Conversion {
+  ID: number;
+  FileID: number;
+  DeviceID: string;
+  SourcePath: string;
+  Class: FileClass;
+  Action: OutputAction;
+  State: ConversionState;
+  OutputPath: string;
+  OutputSize: number;
+  Tool: string;
+  Note: string;
+  Error: string;
+  QueuedAt: string;
+  FinishedAt?: string | null;
 }
 
 export interface SettingsView extends Settings {
@@ -106,6 +176,7 @@ export interface SettingsView extends Settings {
   template_preview: string;
   autostart_supported: boolean;
   default_template: string;
+  output: OutputView;
 }
 
 // One file queued for a phone to collect. "queued" is not "sent": this
@@ -152,6 +223,7 @@ export interface GoApp {
   Outbox(deviceID: string): Promise<QueuedFile[]>;
   CancelSend(deviceID: string, id: string): Promise<void>;
   ClearSent(deviceID: string): Promise<number>;
+  Conversions(limit: number): Promise<Conversion[]>;
   FinishOnboarding(): Promise<void>;
 }
 

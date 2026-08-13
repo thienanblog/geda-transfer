@@ -10,9 +10,11 @@
 
 import { vi } from "vitest";
 import type {
+  Conversion,
   Device,
   GoApp,
   HistoryEntry,
+  OutputView,
   PairCode,
   QueuedFile,
   SendResult,
@@ -60,7 +62,48 @@ export const sampleSettings: SettingsView = {
   template_preview: "An's iPhone/2026/IMG_4021.HEIC",
   autostart_supported: true,
   default_template: "{device}/{yyyy}/{original_name}.{ext}",
+  output_preset: "original",
+  output: sampleOutput(),
 };
+
+export function sampleOutput(over: Partial<OutputView> = {}): OutputView {
+  return {
+    presets: ["original", "compatible", "space-saving"],
+    classes: ["heic", "video", "raw", "other"],
+    actions: ["keep", "sidecar", "replace"],
+    effective: { heic: "keep", video: "keep", raw: "keep", other: "keep" },
+    tools: {
+      ffmpeg: { name: "ffmpeg", path: "/opt/homebrew/bin/ffmpeg", version: "ffmpeg version 7.1" },
+      ffprobe: { name: "ffprobe", path: "/opt/homebrew/bin/ffprobe", version: "ffprobe version 7.1" },
+      heif_convert: { name: "heif-convert", path: "/opt/homebrew/bin/heif-convert", version: "heif-convert 1.19" },
+    },
+    unavailable: "",
+    missing: {},
+    install: "Install with Homebrew: brew install ffmpeg libheif",
+    pending: 0,
+    ...over,
+  };
+}
+
+export function sampleConversion(over: Partial<Conversion> = {}): Conversion {
+  return {
+    ID: 1,
+    FileID: 1,
+    DeviceID: "phone-1",
+    SourcePath: "An's iPhone/2026/IMG_4021.HEIC",
+    Class: "heic",
+    Action: "sidecar",
+    State: "done",
+    OutputPath: "An's iPhone/2026/IMG_4021.jpg",
+    OutputSize: 1_200_000,
+    Tool: "heif-convert",
+    Note: "",
+    Error: "",
+    QueuedAt: new Date().toISOString(),
+    FinishedAt: new Date().toISOString(),
+    ...over,
+  };
+}
 
 export function sampleDevice(over: Partial<Device> = {}): Device {
   return {
@@ -128,6 +171,7 @@ export function install(overrides: Partial<GoApp> = {}): Stub {
     ChooseAndSend: vi.fn(async (): Promise<SendResult> => ({ queued: [], cancelled: true })),
     Outbox: vi.fn(async (): Promise<QueuedFile[]> => []),
     CancelSend: vi.fn(async () => {}),
+    Conversions: vi.fn(async (): Promise<Conversion[]> => []),
     ClearSent: vi.fn(async () => 0),
     FinishOnboarding: vi.fn(async () => {}),
     ...overrides,

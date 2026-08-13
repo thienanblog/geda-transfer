@@ -23,11 +23,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { BackgroundJob } from '../../core/background';
-import type { Receiver } from '../../core/types';
+import { NO_FLAGS } from '../../core/selection';
+import type { Asset, Receiver } from '../../core/types';
 
 const native = {
   jobs: [] as BackgroundJob[],
-  started: [] as { uploadId: string; stagedPath: string; size: number }[],
+  started: [] as { uploadId: string; stagedPath: string; size: number; filename: string }[],
   /** Upload ids `startBackground` refuses, as an unreachable receiver would. */
   refuse: new Set<string>(),
   cleared: 0,
@@ -52,7 +53,9 @@ vi.mock('../../../modules/geda-transfer', () => ({
     backgroundJobs() {
       return native.jobs;
     },
-    async startBackground(requests: { uploadId: string; stagedPath: string; size: number }[]) {
+    async startBackground(
+      requests: { uploadId: string; stagedPath: string; size: number; filename: string }[],
+    ) {
       const accepted = requests.filter((request) => !native.refuse.has(request.uploadId));
       native.started.push(...accepted);
       return accepted.map((request) => request.uploadId);
@@ -135,17 +138,25 @@ vi.mock('../../data/ledger', () => ({
 }));
 
 vi.mock('../../media/library', () => ({
+  release: (asset: Asset) => {
+    if (asset.staged) released.push(asset.filePath);
+  },
   async resolveAsset(summary: { id: string; filename: string; kind: 'photo' | 'video' }) {
     if (summary.id === 'in-icloud') throw new Error('is in iCloud and not on this device');
-    return {
+    const primary: Asset = {
       id: summary.id,
       filename: summary.filename,
       filePath: `/library/${summary.filename}`,
       size: sizes[summary.id] ?? 1000,
       kind: summary.kind,
     };
+    return [primary, ...(extraResources[summary.id] ?? [])];
   },
 }));
+
+/** Extra resources one asset resolves to, keyed by asset id. */
+let extraResources: Record<string, Asset[]> = {};
+let released: string[] = [];
 
 vi.mock('../session', () => ({
   async connect() {
@@ -173,7 +184,12 @@ const receiver: Receiver = {
 };
 
 function summaries(...ids: string[]) {
-  return ids.map((id) => ({ id, filename: `${id}.HEIC`, kind: 'photo' as const }));
+  return ids.map((id) => ({
+    id,
+    filename: `${id}.HEIC`,
+    kind: 'photo' as const,
+    flags: NO_FLAGS,
+  }));
 }
 
 function job(overrides: Partial<BackgroundJob> = {}): BackgroundJob {
@@ -205,6 +221,8 @@ beforeEach(() => {
   ledger.sent = new Set();
   ledger.recorded = [];
   sizes = {};
+  extraResources = {};
+  released = [];
 });
 
 describe('startBackgroundTransfer', () => {
@@ -218,6 +236,104 @@ describe('startBackgroundTransfer', () => {
     for (const started of native.started) {
       expect(started.stagedPath.startsWith('/container/staging/')).toBe(true);
     }
+  });
+
+  // A Live Photo has to be queued whole. Half a pair on the receiver is a
+  // still that no longer moves and a video with nothing to pair it to.
+  it('queues every file an asset resolves to', async () => {
+    extraResources['a'] = [
+      {
+        id: 'a',
+        filename: 'a.MOV',
+        filePath: '/cache/geda-resources/a-pairedVideo-a.MOV',
+        size: 1000,
+        kind: 'video',
+        pairId: 'a',
+        pairRole: 'secondary',
+        resourceType: 'pairedVideo',
+        staged: true,
+      },
+    ];
+
+    const result = await startBackgroundTransfer({ receiver, summaries: summaries('a') });
+    expect(result.queued).toBe(2);
+    expect(native.started.map((s) => s.filename).sort()).toEqual(['a.HEIC', 'a.MOV']);
+  });
+
+  // A copy the resolver made for a file this phone has already sent has
+  // nobody to delete it: it never reaches a staging step or a job.
+  it('deletes copies for resources the receiver already has', async () => {
+    ledger.sent = new Set(['a:pairedVideo:1000']);
+    extraResources['a'] = [
+      {
+        id: 'a',
+        filename: 'a.MOV',
+        filePath: '/cache/geda-resources/a-pairedVideo-a.MOV',
+        size: 1000,
+        kind: 'video',
+        pairRole: 'secondary',
+        resourceType: 'pairedVideo',
+        staged: true,
+      },
+    ];
+
+    await startBackgroundTransfer({ receiver, summaries: summaries('a') });
+    expect(released).toEqual(['/cache/geda-resources/a-pairedVideo-a.MOV']);
+  });
+
+  // The staged copy is what the system will send, so the export it was made
+  // from is finished with. Keeping both would cost twice the disk for every
+  // resource that had to be written out of the library.
+  it('deletes the export once the staged copy exists', async () => {
+    extraResources['a'] = [
+      {
+        id: 'a',
+        filename: 'a.MOV',
+        filePath: '/cache/geda-resources/a-pairedVideo-a.MOV',
+        size: 1000,
+        kind: 'video',
+        pairId: 'a',
+        pairRole: 'secondary',
+        resourceType: 'pairedVideo',
+        staged: true,
+      },
+    ];
+
+    const result = await startBackgroundTransfer({ receiver, summaries: summaries('a') });
+
+    expect(result.queued).toBe(2);
+    expect(released).toEqual(['/cache/geda-resources/a-pairedVideo-a.MOV']);
+  });
+
+  // What a batch had no room for is resolved again on the next kickoff, so
+  // the copy made to look at it has no owner at all.
+  it('deletes exports for what the budget deferred', async () => {
+    extraResources['a'] = [
+      {
+        id: 'a',
+        filename: 'a.MOV',
+        filePath: '/cache/geda-resources/a-pairedVideo-a.MOV',
+        size: 1000,
+        kind: 'video',
+        pairId: 'a',
+        pairRole: 'secondary',
+        resourceType: 'pairedVideo',
+        staged: true,
+      },
+    ];
+
+    // One file's worth of room for the two an asset resolves to.
+    const result = await startBackgroundTransfer({
+      receiver,
+      summaries: summaries('a'),
+      budget: { maxFiles: 1, maxBytes: 10_000 },
+    });
+
+    expect(result.queued).toBe(1);
+    expect(result.deferred).toBe(1);
+    // The MOV was never staged, so nothing but this would delete its export.
+    expect(native.started.map((s) => s.filename)).toEqual(['a.HEIC']);
+    expect(released).toEqual(['/cache/geda-resources/a-pairedVideo-a.MOV']);
   });
 
   it('asks for a wake-up on power and Wi-Fi', async () => {

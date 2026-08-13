@@ -43,13 +43,16 @@ import {
 import { ledgerKey, uploadMetadata } from '../core/plan';
 import { mapPool } from '../core/pool';
 import type { Asset, Receiver } from '../core/types';
+import type { SendOptions } from '../core/selection';
 import { recordSentKey, sentKeys } from '../data/ledger';
-import { resolveAsset, type AssetSummary } from '../media/library';
+import { release, resolveAsset, type AssetSummary } from '../media/library';
 import { connect } from './session';
 
 export type BackgroundStartOptions = {
   receiver: Receiver;
   summaries: AssetSummary[];
+  /** Which parts of each asset to send. Defaults to sending the most. */
+  send?: SendOptions;
   budget?: StagingBudget;
 };
 
@@ -98,10 +101,15 @@ export async function startBackgroundTransfer(
   await mapPool(
     options.summaries,
     async (summary) => {
-      const asset = await resolveAsset(summary);
+      // One asset can resolve to several files: a Live Photo is a still and a
+      // video, and both have to be queued or the pair arrives as half of one.
+      const assets = await resolveAsset(summary, options.send);
       examined += 1;
-      if (!already.has(ledgerKey(asset))) fresh.push(asset);
-      return asset;
+      for (const asset of assets) {
+        if (already.has(ledgerKey(asset))) release(asset);
+        else fresh.push(asset);
+      }
+      return assets;
     },
     {
       shouldContinue: () => fresh.length < budget.maxFiles,
@@ -119,13 +127,31 @@ export async function startBackgroundTransfer(
     freeBytes: availableSpace(),
   });
 
+  // What this batch had no room for is resolved again on the next kickoff, so
+  // the copy made to look at it has no owner. Live Photo videos are tens of
+  // megabytes each, and a hundred of them left behind per run is a phone that
+  // fills up while backing itself up.
+  for (const asset of selection.deferred) release(asset);
+
   // Staged a few at a time, like the foreground path resolves: the copy is
   // I/O, and doing two hundred of them one after another leaves the app
   // unresponsive for as long as it takes.
   const requests = await mapPool(
     selection.selected,
-    (asset) => stage(asset, receiver, baseUrl),
-    { onError: (error, asset) => note(errors, error, asset.filename) },
+    async (asset) => {
+      const request = await stage(asset, receiver, baseUrl);
+      // The staged copy is the one the system will send, so the copy it was
+      // made from is finished with. Keeping both would cost twice the disk
+      // for every resource that had to be exported.
+      release(asset);
+      return request;
+    },
+    {
+      onError: (error, asset) => {
+        release(asset);
+        note(errors, error, asset.filename);
+      },
+    },
   );
 
   const started = await GedaTransfer.startBackground(requests);

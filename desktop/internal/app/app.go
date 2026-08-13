@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"github.com/geda/geda-transfer/core/events"
+	"github.com/geda/geda-transfer/core/formats"
 	"github.com/geda/geda-transfer/core/naming"
 	"github.com/geda/geda-transfer/core/pairing"
 	"github.com/geda/geda-transfer/core/service"
@@ -505,6 +506,47 @@ type SettingsView struct {
 
 	// DefaultTemplate is offered as a reset.
 	DefaultTemplate string `json:"default_template"`
+
+	// Output describes the format handling: what the presets are, what the
+	// chosen one does, and whether this machine can do it.
+	Output OutputView `json:"output"`
+}
+
+// OutputView is everything the output section of the settings screen needs.
+type OutputView struct {
+	// Presets and Classes and Actions are the vocabulary, sent from Go so the
+	// window cannot drift from what core will accept.
+	Presets []string `json:"presets"`
+	Classes []string `json:"classes"`
+	Actions []string `json:"actions"`
+
+	// Effective is what the chosen preset resolves to, per class. The
+	// advanced table shows this whether or not the preset is custom, so that
+	// picking "Space-saving" and reading what it will actually do are the
+	// same gesture.
+	Effective map[string]string `json:"effective"`
+
+	// Tools are the external converters found on this machine.
+	Tools formats.Tools `json:"tools"`
+
+	// Unavailable explains what is missing, when the *saved* policy needs
+	// something this machine does not have.
+	//
+	// The window recomputes this for whatever preset is selected rather than
+	// showing it as it stands: the message has to appear the moment somebody
+	// picks a converting preset, not after they have saved and come back.
+	// Missing is what it needs to do that.
+	Unavailable string `json:"unavailable"`
+
+	// Missing names the converters this machine does not have, per class.
+	// Empty for a class this machine can convert.
+	Missing map[string]string `json:"missing"`
+
+	// Install is how to get them on this platform.
+	Install string `json:"install"`
+
+	// Pending is how many files are queued or being converted right now.
+	Pending int `json:"pending"`
 }
 
 // Settings returns the current settings.
@@ -531,7 +573,82 @@ func (a *App) Settings() (SettingsView, error) {
 		TemplatePreview:    preview,
 		AutostartSupported: autostartSupported(),
 		DefaultTemplate:    settings.DefaultTemplate,
+		Output:             a.outputView(set),
 	}, nil
+}
+
+// outputView describes the format handling for the settings screen.
+//
+// The tool detection comes from the running receiver, which did it once at
+// startup. With nothing running -- the app opened onto a receiver that failed
+// to start -- the vocabulary and the effective table are still correct, and
+// only the "is ffmpeg installed" half is unknown; saying nothing is better
+// than probing the PATH on every render.
+func (a *App) outputView(set settings.Settings) OutputView {
+	policy := set.Policy()
+
+	effective := make(map[string]string, len(formats.Classes))
+	for class, action := range policy.Effective() {
+		effective[string(class)] = string(action)
+	}
+
+	classes := make([]string, 0, len(formats.Classes))
+	for _, class := range formats.Classes {
+		classes = append(classes, string(class))
+	}
+	actions := make([]string, 0, len(formats.Actions))
+	for _, action := range formats.Actions {
+		actions = append(actions, string(action))
+	}
+
+	view := OutputView{
+		Presets:   formats.Presets,
+		Classes:   classes,
+		Actions:   actions,
+		Effective: effective,
+	}
+
+	svc, err := a.service()
+	if err != nil {
+		return view
+	}
+	tools := svc.Tools()
+	view.Tools = tools
+	view.Unavailable = tools.Explain(policy)
+	view.Install = formats.InstallHint()
+	view.Missing = make(map[string]string, len(formats.Classes))
+	for _, class := range formats.Classes {
+		if !tools.CanConvert(class) {
+			view.Missing[string(class)] = formats.MissingFor(class)
+		}
+	}
+	if pending, err := svc.Conversions().Pending(context.Background()); err == nil {
+		view.Pending = pending
+	}
+	return view
+}
+
+// Conversions is the recent format-handling history.
+//
+// It is its own screen section rather than part of the transfer history
+// because a conversion is not a transfer: it happens minutes after the phone
+// has gone, and a file that failed to convert is still a file that arrived
+// safely.
+func (a *App) Conversions(limit int) ([]formats.Item, error) {
+	svc, err := a.service()
+	if err != nil {
+		return nil, err
+	}
+	items, err := svc.Conversions().Recent(context.Background(), limit)
+	if err != nil {
+		return nil, err
+	}
+	if items == nil {
+		// A nil slice marshals to null, and a window that has to handle both
+		// null and [] will one day handle only one of them.
+		items = []formats.Item{}
+	}
+	return items, nil
 }
 
 // SaveSettings validates, stores, and applies new settings.
@@ -543,6 +660,7 @@ func (a *App) SaveSettings(next settings.Settings) (SettingsView, error) {
 	next.Dest = strings.TrimSpace(next.Dest)
 	next.Name = strings.TrimSpace(next.Name)
 	next.Template = strings.TrimSpace(next.Template)
+	next.OutputPreset = strings.TrimSpace(next.OutputPreset)
 	// Onboarding is not a preference the screen owns; only FinishOnboarding
 	// sets it, and a settings save must not be able to clear it.
 	a.mu.Lock()
@@ -596,6 +714,7 @@ func (a *App) settingsView(set settings.Settings) SettingsView {
 		TemplatePreview:    preview,
 		AutostartSupported: autostartSupported(),
 		DefaultTemplate:    settings.DefaultTemplate,
+		Output:             a.outputView(set),
 	}
 }
 

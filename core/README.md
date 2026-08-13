@@ -13,6 +13,7 @@ macOS, Windows, Linux, amd64, and arm64 binaries for the NAS image.
 |---|---|
 | `hash` | Streaming BLAKE3. Produces the full-file digest and the 1 MiB head digest in a single pass. |
 | `store` | The SQLite ledger: paired devices, received files, reserved pair basenames, transfer history, settings. |
+| `formats` | What happens to a file after it is received: the output presets, the external converter search, and the queue that runs them. Never blocks a transfer. |
 
 ## Working on it
 

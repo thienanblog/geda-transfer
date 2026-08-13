@@ -75,6 +75,23 @@ There is no configuration file. Settings live in the ledger, because a second
 file that the window and a text editor could both write would only create a
 question about which of them wins (docs/DECISIONS.md).
 
+## Converting after receipt
+
+Settings › **What arrives** chooses what happens to files once they are stored:
+keep originals (the default, nothing is converted), also write a JPEG and an
+H.264 copy beside them, or let the converted copy replace the original. The
+advanced table below it sets the same thing per file type.
+
+Conversion runs behind the transfer, never inside it. A machine with no
+`ffmpeg` receives exactly as well as one with — it converts nothing and the
+settings screen says which tool is missing and how to install it. `brew install
+ffmpeg libheif` covers both; `GEDA_FFMPEG`, `GEDA_FFPROBE`, and
+`GEDA_HEIF_CONVERT` override the search with an explicit path.
+
+Three things no setting can change: a raw negative is never converted, a member
+of a Live Photo or RAW+JPEG pair is never replaced, and a file sent as a file
+is never touched.
+
 ## Icons
 
 `internal/icons/gen.go` draws the app icon, the macOS template icon, and the

@@ -90,7 +90,16 @@ export function orderForThroughput(assets: Asset[]): Asset[] {
  * quietly never send the edit.
  */
 export function ledgerKey(asset: Asset): string {
-  return `${asset.id}:${asset.size}`;
+  // One asset now yields several files, so a secondary resource carries its
+  // own key: without it, sending a Live Photo would record the still and then
+  // treat the motion as already sent, and the pair would arrive as half a
+  // pair on every run after the first.
+  //
+  // The primary deliberately keeps the key it has always had. Changing it
+  // would make every phone that upgrades re-send its entire library once, for
+  // files the receiver already holds.
+  const resource = asset.pairRole === 'secondary' ? `:${asset.resourceType ?? ''}` : '';
+  return `${asset.id}${resource}:${asset.size}`;
 }
 
 /**
@@ -112,7 +121,10 @@ export function uploadMetadata(asset: Asset): Record<string, string> {
   }
   if (asset.pairId) {
     metadata.pair_id = asset.pairId;
-    metadata.pair_role = asset.kind === 'photo' ? 'primary' : 'secondary';
+    // Taken from the selection rather than derived from the kind: a RAW+JPEG
+    // pair is two photos, and an edited photo sent beside its original is two
+    // photos as well, so "the video is the secondary one" is not a rule.
+    metadata.pair_role = asset.pairRole ?? 'primary';
   }
   if (asset.album) metadata.album = asset.album;
   return metadata;

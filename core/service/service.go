@@ -49,6 +49,7 @@ import (
 
 	"github.com/geda/geda-transfer/core/discovery"
 	"github.com/geda/geda-transfer/core/events"
+	"github.com/geda/geda-transfer/core/formats"
 	"github.com/geda/geda-transfer/core/identity"
 	"github.com/geda/geda-transfer/core/naming"
 	"github.com/geda/geda-transfer/core/receiver"
@@ -109,6 +110,14 @@ type Config struct {
 	// whose settings live in the ledger leaves this empty.
 	NamingTemplate string
 
+	// OutputPolicy, when set, is written to the ledger at startup, on the
+	// same terms as NamingTemplate. Nil leaves whatever is stored alone.
+	OutputPolicy *formats.Policy
+
+	// ConversionWorkers overrides how many files are converted at once. Zero
+	// picks a number from the machine.
+	ConversionWorkers int
+
 	// Logger receives operational messages. Defaults to slog.Default().
 	Logger *slog.Logger
 
@@ -121,11 +130,13 @@ type Service struct {
 	cfg Config
 	log *slog.Logger
 
-	db       *store.DB
-	files    *storage.Store
-	ident    *identity.Identity
-	srv      *receiver.Server
-	listener net.Listener
+	db          *store.DB
+	files       *storage.Store
+	ident       *identity.Identity
+	srv         *receiver.Server
+	listener    net.Listener
+	conversions *formats.Queue
+	tools       formats.Tools
 
 	deviceID  string
 	startedAt time.Time
@@ -168,9 +179,33 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		}
 	}
 
+	if cfg.OutputPolicy != nil {
+		if err := applyPolicy(ctx, db, *cfg.OutputPolicy); err != nil {
+			return fail(err)
+		}
+	}
+
 	if s.files, err = storage.New(db, cfg.Dest); err != nil {
 		return fail(err)
 	}
+
+	// The external converters are located once, at startup, rather than per
+	// file: a PATH search and three version probes per received photo would
+	// be a syscall storm on a library import, and a tool installed while the
+	// app is running is a restart away from being noticed.
+	s.tools = formats.Detect(ctx)
+
+	s.conversions, err = formats.NewQueue(formats.QueueConfig{
+		DB:        db,
+		Root:      s.files.Root(),
+		Converter: formats.NewConverter(s.tools),
+		Workers:   cfg.ConversionWorkers,
+		Logger:    cfg.Logger,
+	})
+	if err != nil {
+		return fail(err)
+	}
+	s.files.NotifyConversions(s.conversions.Wake)
 
 	if s.ident, err = identity.Load(filepath.Join(cfg.StateDir, "identity")); err != nil {
 		return fail(err)
@@ -293,6 +328,20 @@ func (s *Service) StateDir() string { return s.cfg.StateDir }
 // DB exposes the ledger for front ends that need to read it directly.
 func (s *Service) DB() *store.DB { return s.db }
 
+// Conversions is the queue of files waiting to be converted.
+func (s *Service) Conversions() *formats.Queue { return s.conversions }
+
+// Tools are the external converters found on this machine.
+//
+// They are what a settings screen reports, and what tells a user why nothing
+// is being converted. Detected once at startup, so this is a snapshot.
+func (s *Service) Tools() formats.Tools { return s.tools }
+
+// OutputPolicy is what this receiver does with the files it stores.
+func (s *Service) OutputPolicy(ctx context.Context) formats.Policy {
+	return s.files.Policy(ctx)
+}
+
 // Run serves until ctx is cancelled.
 //
 // The receiver and the discovery responders run as one unit: if either fails
@@ -342,6 +391,15 @@ func (s *Service) Run(ctx context.Context) error {
 		return nil
 	})
 
+	// Conversions run behind the transfer, never in front of it: the bytes
+	// are already stored and already acknowledged before anything here starts
+	// (AGENTS.md §3.3). A machine with no ffmpeg receives exactly as well as
+	// one with, and only converts less.
+	g.Go(func() error {
+		s.conversions.Run(ctx)
+		return nil
+	})
+
 	if responder != nil {
 		g.Go(func() error {
 			if err := responder.Serve(ctx); err != nil {
@@ -370,6 +428,13 @@ func (s *Service) Run(ctx context.Context) error {
 		"listen", s.listener.Addr().String(),
 		"dest", s.Dest(),
 		"fingerprint", s.ident.Fingerprint())
+
+	// Said once, at startup, and only when the configured policy actually
+	// needs something that is not there. A receiver on the default preset
+	// converts nothing and is told nothing about ffmpeg.
+	if msg := s.tools.Explain(s.files.Policy(ctx)); msg != "" {
+		s.log.Warn("output conversion is configured but cannot run", "detail", msg)
+	}
 
 	return g.Wait()
 }
@@ -441,6 +506,28 @@ func applyTemplate(ctx context.Context, db *store.DB, tmpl string) error {
 		return fmt.Errorf("naming template: %w", err)
 	}
 	return db.SetSetting(ctx, storage.SettingTemplate, tmpl)
+}
+
+// applyPolicy validates an output policy and stores it.
+//
+// Validated at startup for the same reason the naming template is: a policy
+// that cannot be applied is a configuration error, and finding out about it
+// when the first photo of the holiday arrives is too late.
+func applyPolicy(ctx context.Context, db *store.DB, p formats.Policy) error {
+	if err := p.Validate(); err != nil {
+		return fmt.Errorf("output policy: %w", err)
+	}
+	preset, matrix, err := p.Marshal()
+	if err != nil {
+		return fmt.Errorf("output policy: %w", err)
+	}
+	if err := db.SetSetting(ctx, formats.SettingPreset, preset); err != nil {
+		return fmt.Errorf("save the output preset: %w", err)
+	}
+	if err := db.SetSetting(ctx, formats.SettingMatrix, matrix); err != nil {
+		return fmt.Errorf("save the output matrix: %w", err)
+	}
+	return nil
 }
 
 // nullTime parses a nullable RFC3339 column.

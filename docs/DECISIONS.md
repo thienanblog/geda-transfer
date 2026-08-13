@@ -616,3 +616,133 @@ The inbox card counts a parked file as outstanding for that reason, and the
 background kickoff is scheduled while any download exists rather than only
 while one is still moving. Reporting it as done would be reporting the system's
 work, not the user's file.
+
+## 2026-08-14 — Conversion happens after receipt, and never blocks a transfer
+The phone sends originals (AGENTS.md §3.3), so every conversion in the product
+happens on the receiver. The choice left open was *when*: inside the upload
+path, before the file is acknowledged, or afterwards from a queue.
+
+Afterwards, from a queue. Converting a 4K video takes minutes on a laptop and
+much longer on a NAS, and a transfer that waited for it would hold the phone's
+connection open, hold the app in the foreground, and turn a two-minute backup
+into an afternoon. Worse, a failing converter would become a failing transfer:
+a machine with a broken ffmpeg would stop receiving photos.
+
+So `storage.Commit` records the file, acknowledges it, and only then writes a
+row to `conversions`. A receiver with no converter installed receives exactly
+as well as one with — it simply converts nothing, and says so rather than
+going quiet. The cost is a crash in the window between the rename and the
+insert, which loses a conversion and leaves the original stored: the safe
+direction, and one a later re-run fixes.
+
+## 2026-08-14 — Three things no output preset can change
+The presets are Original, Compatible, and Space-saving, plus an advanced
+per-type table. Three rules sit underneath all four and cannot be turned off,
+because each is a data-loss bug rather than a preference.
+
+**A raw negative is never converted.** There is no output from a DNG that is
+not a downgrade, and the original cannot be reconstructed from one. This is
+enforced in three places on purpose — the preset tables, `Policy.Action`, and
+the ledger decoder — because a custom matrix reaches the receiver from a row
+that nothing validated on the way in, and the mistake is not recoverable.
+
+**A member of a Live Photo or RAW+JPEG pair is never replaced.** Converting one
+half leaves a still that no longer moves and a video with nothing to pair it
+to. The conversion is still performed — the user asked for a copy they can open
+— but the deletion is refused and the reason is recorded on the row, because
+somebody who chose Space-saving and did not get the disk space back is entitled
+to know why.
+
+**A file sent as a file is never touched.** A `.mov` inside somebody's video
+project is not media this product has an opinion about. The sender's `kind` is
+what decides, not the extension.
+
+## 2026-08-14 — Space-saving deletes the original, so the ledger stops vouching
+for it
+`files.hash` is the digest of the bytes that arrived, and it is what a phone
+will be told to compare against when delete-after-transfer arrives in P9. When
+the Space-saving preset removes a received original, that digest describes
+bytes the machine no longer holds — the ledger would still say "I have this
+file" about something it cannot produce.
+
+Rewriting `hash` to the converted file's digest would be worse: the phone's
+copy would then never match, and the row would quietly stop meaning what every
+other row means.
+
+So the hash stays truthful and `files.original_removed_at` records that the
+receiver can no longer prove it holds those bytes. A file with that column set
+is never eligible to authorise deleting the phone's copy, whatever the hashes
+say. Choosing Space-saving is choosing to give that up, for those files.
+
+## 2026-08-14 — External converters are found in more places than PATH
+A desktop app launched from Finder or the Dock inherits
+`/usr/bin:/bin:/usr/sbin:/sbin` — not the PATH the user's shell has. So a
+Homebrew ffmpeg that works perfectly in Terminal is invisible to the app, and
+the user is told to install something they already have.
+
+`formats.Detect` therefore searches the well-known install locations after
+PATH: Homebrew on both architectures, MacPorts, Fink, and the usual Linux
+directories. `GEDA_FFMPEG`, `GEDA_FFPROBE`, and `GEDA_HEIF_CONVERT` override
+the search, and an override is honoured exactly as given — including when it
+points at nothing. Falling back to a different binary than the one somebody
+named is how a machine ends up converting with a tool nobody chose.
+
+The message when something is missing says the files are safe in the same
+sentence as the problem. "ffmpeg is not installed" on its own reads like data
+loss, when the actual outcome is that originals are kept.
+
+## 2026-08-14 — libheif for stills, ffmpeg for video, ffprobe to avoid work
+HEIC goes through `heif-convert` when it is there and ffmpeg when it is not:
+libheif is the format's reference implementation, and a large share of
+distribution ffmpeg builds have no HEIF decoder at all, so preferring ffmpeg
+would produce a receiver that reports a converter and then fails every photo.
+
+Video goes through ffmpeg, but only after `ffprobe` says the stream is not
+already H.264. Re-encoding an H.264 file produces a slightly worse H.264 file
+and nothing else. Without ffprobe the answer is "convert" — wasteful, but not
+wrong, and ffmpeg without ffprobe is an unusual machine.
+
+None of these are linked into the build. A GPL ffmpeg linked in would
+relicense the product and end App Store distribution (AGENTS.md §3.3), so they
+are separate processes, invoked as argument vectors and never through a shell:
+filenames come from a phone, and a photo called `; rm -rf ~` is a filename.
+
+## 2026-08-14 — One asset is several files, and the phone chooses which
+A Live Photo is a still and a video. A ProRAW shot is a negative and often a
+rendered JPEG. An edited photo is the capture and the render. iOS models each
+of these as one `PHAsset` with several `PHAssetResource`s, and until P8 this
+app sent whichever one `getUri` happened to return.
+
+The choice now lives in `src/core/selection.ts`, which is plain TypeScript with
+no React Native imports and is therefore tested without a device — the rules
+are where a backup quietly loses somebody's negatives, so they are the last
+place to accept "we will find out on the phone".
+
+Every default sends more rather than less, with one exception: hidden assets
+are off. Somebody hid those deliberately, and a backup that un-hides them onto
+a shared family computer is its own kind of data loss. Bursts default to the
+frames iOS and the user picked, because forty near-identical frames for one
+photograph would multiply a transfer by forty.
+
+One rule overrides every option: **an asset never resolves to nothing.** "JPEG
+only" on a shot with no JPEG falls back to the negative; an unrecognised
+resource type is sent rather than skipped. An option that silently drops a
+photo is worse than an option that sends the wrong one.
+
+## 2026-08-14 — The ordinary photo still leaves the library without a copy
+Only the asset's current representation has a file URL. Everything else — a
+Live Photo's video, a negative's JPEG, the untouched original of an edited
+photo — can only be reached through `PHAssetResourceManager`, which writes a
+copy into the app container.
+
+So the resolver keeps the zero-copy path for the case it has always had: one
+ordinary photo, sent straight out of the library. The copy is paid only by the
+options that ask for more, and it is deleted by whoever asked for it — a Live
+Photo's video is tens of megabytes, and a library import that left one behind
+per photo would fill the phone.
+
+The local ledger's key follows the same shape. A secondary resource carries its
+own key so that sending a Live Photo does not record the still and then treat
+the motion as already sent; the primary deliberately keeps the key it has
+always had, so that upgrading does not make every phone re-send its entire
+library for files the receiver already holds.

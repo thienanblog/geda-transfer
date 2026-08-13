@@ -205,6 +205,50 @@ public class GedaTransferModule: Module {
       try FileDigest.sha256(path: path)
     }
 
+    // MARK: the photo library
+
+    /// The flags that decide whether an asset is sent at all: screenshot,
+    /// hidden, one frame of a burst, edited.
+    ///
+    /// `expo-media-library` has no concept of any of them, and every one is a
+    /// send option in P8. Cheap enough to ask about a whole library at once --
+    /// these are properties PHAsset already holds.
+    AsyncFunction("assetFlags") { (assetIds: [String]) -> [[String: Any]] in
+      AssetLibrary.flags(for: assetIds)
+    }
+
+    /// Hidden assets, which an ordinary library query does not return at all.
+    AsyncFunction("hiddenAssets") { (limit: Int) -> [[String: Any]] in
+      AssetLibrary.hiddenAssets(limit: limit)
+    }
+
+    /// Every resource one asset holds.
+    ///
+    /// A Live Photo is a still and a video; a ProRAW shot is a negative and
+    /// often a JPEG; an edited photo is the capture and the render. Which of
+    /// them to send is decided in TypeScript (src/core/selection.ts); this
+    /// only reports what is there.
+    AsyncFunction("assetResources") { (assetId: String) -> [[String: Any]] in
+      try AssetLibrary.resources(of: assetId)
+    }
+
+    /// Copies one resource out of the library and returns its size.
+    ///
+    /// Only used for resources that cannot be reached as a plain file URL --
+    /// a Live Photo's video, a raw negative's JPEG, the untouched original of
+    /// an edited photo. The ordinary case still sends straight from the
+    /// library with no copy at all, which is what keeps the P4 baseline.
+    AsyncFunction("exportResource") { (assetId: String, type: String, destination: String, promise: Promise) in
+      AssetLibrary.export(identifier: assetId, type: type, to: destination) { result in
+        switch result {
+        case .success(let size):
+          promise.resolve(size)
+        case .failure(let error):
+          promise.reject(error)
+        }
+      }
+    }
+
     OnDestroy {
       BackgroundUploader.shared.onEvent = nil
       BackgroundDownloader.shared.onEvent = nil
