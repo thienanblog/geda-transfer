@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -435,8 +436,15 @@ func TestATransientOpenFailureDoesNotKillTheItem(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Unreadable, but present. Root can read it anyway, so the assertion only
-	// holds where the test is not running as root.
+	// Unreadable, but present -- which is a POSIX permission and nothing else.
+	// On Windows os.Chmod only toggles the read-only attribute, so the file
+	// opens anyway and there is no way to stage the condition; and root can
+	// read it regardless of the mode. The receiver's behaviour under a
+	// transient open error is the same everywhere, so the two platforms that
+	// cannot produce one skip rather than assert something untrue.
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod cannot make a file unreadable on Windows")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("running as root; permissions do not apply")
 	}
