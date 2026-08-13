@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import type { ResourceType } from './selection';
+
 /** A receiver this phone has paired with. */
 export type Receiver = {
   deviceId: string;
@@ -43,6 +45,28 @@ export type Asset = {
    * give them one basename (AGENTS.md §3.6).
    */
   pairId?: string;
+
+  /**
+   * Which member of the pair this is. The still is primary; the motion, the
+   * JPEG beside a negative, and the untouched original are secondary.
+   *
+   * It cannot be derived from `kind`: a RAW+JPEG pair is two photos, and an
+   * edited photo sent with its original is two photos as well.
+   */
+  pairRole?: 'primary' | 'secondary';
+
+  /** Which `PHAssetResource` this came from. Empty for a plain file. */
+  resourceType?: ResourceType;
+
+  /**
+   * True when `filePath` is a copy this app made and owns.
+   *
+   * A resource with no file URL behind it -- a Live Photo's video, a raw
+   * negative's JPEG -- has to be written out of the library before it can be
+   * sent, and whoever asked for it has to delete it afterwards.
+   */
+  staged?: boolean;
+
   album?: string;
 };
 

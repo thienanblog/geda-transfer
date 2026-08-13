@@ -57,6 +57,7 @@ func New(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 		MDNS:           cfg.MDNS,
 		Discovery:      cfg.Discovery,
 		NamingTemplate: cfg.NamingTemplate,
+		OutputPolicy:   cfg.OutputPolicy(),
 		Logger:         log,
 	})
 	if err != nil {

@@ -89,7 +89,7 @@ if command -v swiftc >/dev/null && xcrun --sdk iphoneos --show-sdk-path >/dev/nu
         && swiftc -typecheck -sdk "$SDK" -target arm64-apple-ios16.4 \
              SPKIPin.swift PinnedClient.swift Tus.swift BackgroundStore.swift \
              BackgroundUploader.swift LiveActivity.swift GedaTransferAttributes.swift \
-             DownloadStore.swift BackgroundDownloader.swift \
+             DownloadStore.swift BackgroundDownloader.swift AssetLibrary.swift \
              >/dev/null) \
         || fail "the background download sources do not typecheck"
     pass "the download session and its store typecheck against the iOS SDK"

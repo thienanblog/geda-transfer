@@ -4,6 +4,16 @@
 *.test
 *.out
 
+# Built helper binaries. `go build ./internal/<pkg>` from inside core/ drops
+# the binary at core/<pkg>, right beside the source it was built from -- which
+# is how a 17 MB gate driver nearly ended up in the history of a repository
+# that ships publicly.
+/core/devserver
+/core/gatepeer
+/core/outboxgate
+/core/formatsgate
+/core/faketool
+
 # Wails
 /desktop/build/bin/
 /desktop/frontend/dist/

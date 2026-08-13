@@ -16,6 +16,8 @@ import {
   install,
   queuedFile,
   sampleDevice,
+  sampleOutput,
+  sampleSettings,
   sampleStatus,
   settle,
   text,
@@ -325,6 +327,174 @@ describe("the settings screen", () => {
     expect((advanced as HTMLDetailsElement).open).toBe(false);
     expect(text(advanced!)).toContain("Port");
     expect(text(advanced!)).toContain("can stop phones finding this computer");
+  });
+
+  it("offers the output presets with the default chosen", async () => {
+    install();
+    const view = settingsView(() => {});
+    document.body.append(view.element);
+    await settle();
+
+    const radios = [...view.element.querySelectorAll<HTMLInputElement>('input[name="output-preset"]')];
+    expect(radios.map((r) => r.value)).toEqual(["original", "compatible", "space-saving"]);
+    expect(radios.find((r) => r.checked)?.value).toBe("original");
+
+    // The destructive one has to say what it destroys, in its own hint
+    // rather than behind a "learn more".
+    expect(text(view.element)).toContain("The original is gone");
+  });
+
+  it("sends the chosen preset and no matrix", async () => {
+    const stub = install();
+    const view = settingsView(() => {});
+    document.body.append(view.element);
+    await settle();
+
+    const compatible = view.element.querySelector<HTMLInputElement>('input[value="compatible"]')!;
+    compatible.checked = true;
+    compatible.dispatchEvent(new Event("change"));
+
+    [...view.element.querySelectorAll("button")].find((b) => b.textContent === "Save")!.click();
+    await settle();
+
+    const sent = vi.mocked(stub.go.SaveSettings).mock.calls[0]![0];
+    expect(sent.output_preset).toBe("compatible");
+    // A named preset must not also carry a table: core would then have two
+    // answers for the same question.
+    expect(sent.output_matrix).toBeNull();
+  });
+
+  // Touching the per-type table means the user wants something no preset
+  // offers, so the preset has to follow the table rather than overrule it.
+  it("switches to a custom policy when the per-type table is used", async () => {
+    const stub = install();
+    const view = settingsView(() => {});
+    document.body.append(view.element);
+    await settle();
+
+    const heic = view.element.querySelector<HTMLSelectElement>(".settings-matrix select")!;
+    heic.value = "sidecar";
+    heic.dispatchEvent(new Event("change"));
+
+    expect(
+      [...view.element.querySelectorAll<HTMLInputElement>('input[name="output-preset"]')].some(
+        (r) => r.checked,
+      ),
+    ).toBe(false);
+
+    [...view.element.querySelectorAll("button")].find((b) => b.textContent === "Save")!.click();
+    await settle();
+
+    const sent = vi.mocked(stub.go.SaveSettings).mock.calls[0]![0];
+    expect(sent.output_preset).toBe("custom");
+    expect(sent.output_matrix).toMatchObject({ heic: "sidecar", raw: "keep" });
+  });
+
+  // Half of the P8 gate, stated where a person could otherwise change it by
+  // accident: there is no control on this screen that converts a negative.
+  it("gives raw negatives no option but to be kept", async () => {
+    install();
+    const view = settingsView(() => {});
+    document.body.append(view.element);
+    await settle();
+
+    const selects = [...view.element.querySelectorAll<HTMLSelectElement>(".settings-matrix select")];
+    const raw = selects[2]!;
+    expect(raw.disabled).toBe(true);
+    expect([...raw.options].map((o) => o.value)).toEqual(["keep"]);
+  });
+
+  it("says why nothing is being converted, and that the files are safe", async () => {
+    install({
+      Settings: vi.fn(async () => ({
+        ...sampleSettings,
+        output_preset: "compatible" as const,
+        output: sampleOutput({
+          effective: { heic: "sidecar", video: "sidecar", raw: "keep", other: "keep" },
+          missing: { heic: "libheif (heif-convert) or ffmpeg", video: "ffmpeg" },
+        }),
+      })),
+    });
+
+    const view = settingsView(() => {});
+    document.body.append(view.element);
+    await settle();
+
+    const notice = view.element.querySelector(".output-notice") as HTMLElement;
+    expect(notice.hidden).toBe(false);
+    expect(notice.textContent).toContain("ffmpeg");
+    expect(notice.textContent).toContain("stored exactly as they were sent");
+    expect(notice.textContent).toContain("brew install");
+  });
+
+  // A receiver that converts nothing needs no converter, so a missing ffmpeg
+  // is not worth mentioning on the default preset.
+  it("says nothing about ffmpeg when nothing is being converted", async () => {
+    install({
+      Settings: vi.fn(async () => ({
+        ...sampleSettings,
+        output: sampleOutput({ missing: { heic: "ffmpeg", video: "ffmpeg" } }),
+      })),
+    });
+
+    const view = settingsView(() => {});
+    document.body.append(view.element);
+    await settle();
+
+    expect((view.element.querySelector(".output-notice") as HTMLElement).hidden).toBe(true);
+  });
+
+  // The whole point of the message: it has to arrive while the choice is
+  // being made. Waiting for a save and a revisit is how somebody walks away
+  // believing their photos are being converted when nothing is.
+  it("warns as soon as a converting preset is picked, before any save", async () => {
+    install({
+      Settings: vi.fn(async () => ({
+        ...sampleSettings,
+        output: sampleOutput({ missing: { heic: "ffmpeg", video: "ffmpeg" } }),
+      })),
+    });
+
+    const view = settingsView(() => {});
+    document.body.append(view.element);
+    await settle();
+
+    const notice = view.element.querySelector(".output-notice") as HTMLElement;
+    expect(notice.hidden).toBe(true);
+
+    const compatible = view.element.querySelector<HTMLInputElement>('input[value="compatible"]')!;
+    compatible.checked = true;
+    compatible.dispatchEvent(new Event("change"));
+
+    expect(notice.hidden).toBe(false);
+    expect(notice.textContent).toContain("ffmpeg is not installed");
+  });
+
+  // And it goes away again when the choice is undone, without a round trip.
+  it("stops warning when the preset goes back to keeping originals", async () => {
+    install({
+      Settings: vi.fn(async () => ({
+        ...sampleSettings,
+        output_preset: "compatible" as const,
+        output: sampleOutput({
+          effective: { heic: "sidecar", video: "sidecar", raw: "keep", other: "keep" },
+          missing: { heic: "ffmpeg", video: "ffmpeg" },
+        }),
+      })),
+    });
+
+    const view = settingsView(() => {});
+    document.body.append(view.element);
+    await settle();
+
+    const notice = view.element.querySelector(".output-notice") as HTMLElement;
+    expect(notice.hidden).toBe(false);
+
+    const original = view.element.querySelector<HTMLInputElement>('input[value="original"]')!;
+    original.checked = true;
+    original.dispatchEvent(new Event("change"));
+
+    expect(notice.hidden).toBe(true);
   });
 });
 

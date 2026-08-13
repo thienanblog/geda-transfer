@@ -34,6 +34,7 @@ import (
 
 	"modernc.org/sqlite"
 
+	"github.com/geda/geda-transfer/core/formats"
 	"github.com/geda/geda-transfer/core/hash"
 	"github.com/geda/geda-transfer/core/naming"
 	"github.com/geda/geda-transfer/core/store"
@@ -73,6 +74,10 @@ var ErrNoSpace = errors.New("no free filename found")
 type Store struct {
 	db   *store.DB
 	root string
+
+	// wake is called after a conversion is queued, so the worker starts on it
+	// rather than waiting for its next sweep. Nil when nothing is converting.
+	wake func()
 }
 
 // New prepares root as a destination directory.
@@ -108,6 +113,33 @@ func (s *Store) Template(ctx context.Context) (string, error) {
 	return tmpl, nil
 }
 
+// Policy returns the user's output policy, or the default if unset.
+//
+// It is read per commit rather than cached, for the same reason the template
+// is: a settings change has to reach the next file, not the next restart.
+func (s *Store) Policy(ctx context.Context) formats.Policy {
+	preset, err := s.db.Setting(ctx, formats.SettingPreset)
+	if err != nil {
+		// Including ErrNotFound, which is the common case on a receiver
+		// nobody has configured. A policy that cannot be read is the default
+		// one, and the default keeps originals.
+		return formats.Default()
+	}
+	matrix, err := s.db.Setting(ctx, formats.SettingMatrix)
+	if err != nil {
+		matrix = ""
+	}
+	return formats.Unmarshal(preset, matrix)
+}
+
+// NotifyConversions registers a callback run whenever a conversion is queued.
+//
+// Without it the converter would still do the work, on its next sweep. With
+// it, a photo that lands while somebody is watching the window is converted
+// straight away, which is the difference between a feature that looks broken
+// and one that looks instant.
+func (s *Store) NotifyConversions(f func()) { s.wake = f }
+
 // Incoming describes a fully received file awaiting a home.
 type Incoming struct {
 	DeviceID   string
@@ -140,6 +172,11 @@ type Committed struct {
 	// Deduplicated is true when identical content was already present, in
 	// which case Path points at the existing copy and nothing was written.
 	Deduplicated bool
+
+	// Conversion is what the output policy decided about this file. Its
+	// action is formats.ActionKeep when nothing was queued, which is the
+	// default preset's answer for everything.
+	Conversion formats.Decision
 }
 
 // AbsPath returns the committed file's absolute location.
@@ -174,7 +211,17 @@ func (s *Store) Commit(ctx context.Context, in Incoming, tempPath string) (Commi
 		if err := os.Remove(tempPath); err != nil && !os.IsNotExist(err) {
 			return Committed{}, fmt.Errorf("discard duplicate upload: %w", err)
 		}
-		return Committed{Path: existing, Deduplicated: true}, nil
+		// Nothing was written, so there is nothing new to convert. The copy
+		// already on disk was converted when it arrived; queueing it again
+		// would redo that work on every re-run of the same library.
+		return Committed{
+			Path:         existing,
+			Deduplicated: true,
+			Conversion: formats.Decision{
+				Class:  formats.Classify(in.Kind, existing),
+				Action: formats.ActionKeep,
+			},
+		}, nil
 	}
 
 	tmpl, err := s.Template(ctx)
@@ -182,7 +229,7 @@ func (s *Store) Commit(ctx context.Context, in Incoming, tempPath string) (Commi
 		return Committed{}, err
 	}
 
-	placed, err := s.place(ctx, in, tmpl)
+	placed, fileID, err := s.place(ctx, in, tmpl)
 	if err != nil {
 		return Committed{}, err
 	}
@@ -202,7 +249,50 @@ func (s *Store) Commit(ctx context.Context, in Incoming, tempPath string) (Commi
 		_ = os.Chtimes(abs, in.CapturedAt, in.CapturedAt)
 	}
 
-	return Committed{Path: placed}, nil
+	// Last, and deliberately after the file is in its final place: a worker
+	// that found a row pointing at a name still being renamed into would
+	// convert a file that is not there yet.
+	decision := s.queueConversion(ctx, in, placed, fileID)
+
+	return Committed{Path: placed, Conversion: decision}, nil
+}
+
+// queueConversion asks the output policy what happens to this file and, if
+// the answer is work, records it.
+//
+// Every failure here is swallowed after logging into the returned decision:
+// the transfer succeeded, the bytes are stored, and refusing to acknowledge a
+// file the receiver is holding because a queue insert failed would make the
+// phone send it all over again.
+func (s *Store) queueConversion(ctx context.Context, in Incoming, placed string, fileID int64) formats.Decision {
+	decision := s.Policy(ctx).Decide(formats.File{
+		Name:   placed,
+		Kind:   in.Kind,
+		Paired: in.PairID != "",
+	})
+	if decision.Action == formats.ActionKeep {
+		return decision
+	}
+
+	err := formats.Enqueue(ctx, s.db, formats.Request{
+		FileID:     fileID,
+		DeviceID:   in.DeviceID,
+		SourcePath: placed,
+		Class:      decision.Class,
+		Action:     decision.Action,
+		Note:       decision.Downgraded,
+		CapturedAt: in.CapturedAt,
+	})
+	if err != nil {
+		decision.Action = formats.ActionKeep
+		decision.Downgraded = err.Error()
+		return decision
+	}
+
+	if s.wake != nil {
+		s.wake()
+	}
+	return decision
 }
 
 // existingPath reports where identical content from this device already lives,
@@ -223,7 +313,7 @@ func (s *Store) existingPath(ctx context.Context, deviceID, fullHash string) (st
 
 // place picks a free name, claims it on disk and in the ledger, and returns
 // the destination-relative path.
-func (s *Store) place(ctx context.Context, in Incoming, tmpl string) (string, error) {
+func (s *Store) place(ctx context.Context, in Incoming, tmpl string) (string, int64, error) {
 	vars := naming.Vars{
 		CapturedAt:   in.CapturedAt,
 		OriginalName: in.OriginalName,
@@ -237,24 +327,24 @@ func (s *Store) place(ctx context.Context, in Incoming, tmpl string) (string, er
 	if in.PairID != "" {
 		reserved, ok, err := s.reservedPairName(ctx, in.DeviceID, in.PairID)
 		if err != nil {
-			return "", err
+			return "", 0, err
 		}
 		if ok {
 			res, err := naming.Render(tmpl, vars, 0)
 			if err != nil {
-				return "", fmt.Errorf("render template: %w", err)
+				return "", 0, fmt.Errorf("render template: %w", err)
 			}
 
-			path, err := s.claim(ctx, in, naming.Result{
+			path, fileID, err := s.claim(ctx, in, naming.Result{
 				Dir:  reserved.dir,
 				Base: reserved.basename,
 				Ext:  res.Ext,
 			})
 			if err == nil {
-				return path, nil
+				return path, fileID, nil
 			}
 			if !errors.Is(err, errNameTaken) {
-				return "", err
+				return "", 0, err
 			}
 			// Two members of one pair claim the same extension, so they cannot
 			// both have the pair's name. That should not happen -- a Live
@@ -267,28 +357,28 @@ func (s *Store) place(ctx context.Context, in Incoming, tmpl string) (string, er
 	for counter := range maxCollisionAttempts {
 		res, err := naming.Render(tmpl, vars, counter)
 		if err != nil {
-			return "", fmt.Errorf("render template: %w", err)
+			return "", 0, fmt.Errorf("render template: %w", err)
 		}
 
 		taken, err := s.basenameTaken(ctx, res.Dir, res.Base)
 		if err != nil {
-			return "", err
+			return "", 0, err
 		}
 		if taken {
 			continue
 		}
 
-		path, err := s.claim(ctx, in, res)
+		path, fileID, err := s.claim(ctx, in, res)
 		if errors.Is(err, errNameTaken) {
 			continue
 		}
 		if err != nil {
-			return "", err
+			return "", 0, err
 		}
-		return path, nil
+		return path, fileID, nil
 	}
 
-	return "", fmt.Errorf("%w after %d attempts", ErrNoSpace, maxCollisionAttempts)
+	return "", 0, fmt.Errorf("%w after %d attempts", ErrNoSpace, maxCollisionAttempts)
 }
 
 // errNameTaken signals that a candidate name was claimed by someone else
@@ -332,12 +422,12 @@ func (s *Store) basenameTaken(ctx context.Context, dir, base string) (bool, erro
 
 // claim reserves a name on disk and in the ledger, returning errNameTaken if
 // either was won by someone else.
-func (s *Store) claim(ctx context.Context, in Incoming, res naming.Result) (string, error) {
+func (s *Store) claim(ctx context.Context, in Incoming, res naming.Result) (string, int64, error) {
 	rel := res.Path()
 	abs := filepath.Join(s.root, filepath.FromSlash(rel))
 
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
-		return "", fmt.Errorf("create destination directory: %w", err)
+		return "", 0, fmt.Errorf("create destination directory: %w", err)
 	}
 
 	// O_EXCL is what stops a rename from silently destroying a file the user
@@ -345,26 +435,27 @@ func (s *Store) claim(ctx context.Context, in Incoming, res naming.Result) (stri
 	f, err := os.OpenFile(abs, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 	if err != nil {
 		if os.IsExist(err) {
-			return "", errNameTaken
+			return "", 0, errNameTaken
 		}
-		return "", fmt.Errorf("claim %s: %w", rel, err)
+		return "", 0, fmt.Errorf("claim %s: %w", rel, err)
 	}
 	f.Close()
 
-	if err := s.record(ctx, in, res, rel); err != nil {
+	fileID, err := s.record(ctx, in, res, rel)
+	if err != nil {
 		os.Remove(abs)
-		return "", err
+		return "", 0, err
 	}
-	return rel, nil
+	return rel, fileID, nil
 }
 
 // record inserts the ledger row and, for a pair member arriving first, the
 // pair's basename reservation. Both happen in one transaction so a crash
 // cannot leave a reservation with no file behind it.
-func (s *Store) record(ctx context.Context, in Incoming, res naming.Result, rel string) error {
+func (s *Store) record(ctx context.Context, in Incoming, res naming.Result, rel string) (int64, error) {
 	tx, err := s.db.SQL().BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin: %w", err)
+		return 0, fmt.Errorf("begin: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -382,7 +473,7 @@ func (s *Store) record(ctx context.Context, in Incoming, res naming.Result, rel 
 		}
 	}
 
-	_, err = tx.ExecContext(ctx, `
+	result, err := tx.ExecContext(ctx, `
 		INSERT INTO files (device_id, hash, head_hash, size, captured_at, original_name,
 		                   dir, basename, ext, stored_path, pair_id, pair_role, kind, received_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -390,9 +481,14 @@ func (s *Store) record(ctx context.Context, in Incoming, res naming.Result, rel 
 		res.Dir, res.Base, res.Ext, rel, pairID, pairRole, in.Kind, now)
 	if err != nil {
 		if isUniqueViolation(err) {
-			return errNameTaken
+			return 0, errNameTaken
 		}
-		return fmt.Errorf("record file: %w", err)
+		return 0, fmt.Errorf("record file: %w", err)
+	}
+
+	fileID, err := result.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("record file: %w", err)
 	}
 
 	if in.PairID != "" {
@@ -403,14 +499,14 @@ func (s *Store) record(ctx context.Context, in Incoming, res naming.Result, rel 
 			VALUES (?, ?, ?, ?, ?)`,
 			in.DeviceID, in.PairID, res.Dir, res.Base, now)
 		if err != nil {
-			return fmt.Errorf("reserve pair basename: %w", err)
+			return 0, fmt.Errorf("reserve pair basename: %w", err)
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit: %w", err)
+		return 0, fmt.Errorf("commit: %w", err)
 	}
-	return nil
+	return fileID, nil
 }
 
 // unplace undoes a claim whose file could not be moved into place.

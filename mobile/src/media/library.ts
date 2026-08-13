@@ -24,7 +24,7 @@
 //     (AGENTS.md §5), so the list is built from metadata the media store keeps
 //     in memory, and the path is resolved later, overlapped with uploading.
 
-import { File } from 'expo-file-system';
+import { Directory, File, Paths } from 'expo-file-system';
 import {
   Asset as MediaAsset,
   AssetField,
@@ -34,6 +34,15 @@ import {
   requestPermissionsAsync,
 } from 'expo-media-library';
 
+import GedaTransfer from '../../modules/geda-transfer';
+import {
+  DEFAULT_SEND_OPTIONS,
+  NO_FLAGS,
+  chooseResources,
+  type AssetFlags,
+  type Chosen,
+  type SendOptions,
+} from '../core/selection';
 import type { Asset } from '../core/types';
 
 /** An asset as the library lists it, before its file has been located. */
@@ -42,6 +51,20 @@ export type AssetSummary = {
   filename: string;
   kind: 'photo' | 'video';
   capturedAt?: number;
+
+  /**
+   * Screenshot, hidden, one frame of a burst, edited.
+   *
+   * Filled in by `listAssets` from the native module -- `expo-media-library`
+   * reports none of it, and every one of them is a send option (docs/PLAN.md
+   * P8). Defaults to NO_FLAGS so an asset from anywhere else is simply sent.
+   *
+   * `hasAdjustments` is the exception: knowing it costs a resource lookup per
+   * asset, which is the slowest step in a transfer (AGENTS.md §5), so listing
+   * leaves it false and `resolveAsset` fills it in from the resource list it
+   * fetches anyway.
+   */
+  flags: AssetFlags;
 };
 
 export type LibraryAccess = 'granted' | 'limited' | 'denied';
@@ -67,6 +90,15 @@ export type ListOptions = {
   /** Only assets created after this millisecond timestamp. */
   since?: number;
   kinds?: ('photo' | 'video')[];
+
+  /**
+   * Also list hidden assets, which an ordinary library query never returns.
+   *
+   * Off by default and separate from the send options on purpose: a listing
+   * that quietly contained hidden photos would show them on screen, which is
+   * most of the harm before a single byte is sent.
+   */
+  includeHidden?: boolean;
 };
 
 /**
@@ -93,25 +125,84 @@ export async function listAssets(options: ListOptions = {}): Promise<AssetSummar
 
   const metadata = await query.exeForMetadata();
 
-  return metadata.map((entry) => ({
+  const summaries: AssetSummary[] = metadata.map((entry) => ({
     id: entry.id,
     filename: entry.filename ?? entry.id,
     kind: entry.mediaType === MediaType.VIDEO ? 'video' : 'photo',
     capturedAt: entry.creationTime ?? entry.modificationTime ?? undefined,
+    flags: NO_FLAGS,
   }));
+
+  await attachFlags(summaries);
+
+  if (options.includeHidden) {
+    summaries.push(...(await listHidden(options)));
+    summaries.sort((a, b) => (b.capturedAt ?? 0) - (a.capturedAt ?? 0));
+  }
+
+  return summaries;
+}
+
+/**
+ * Fills in each summary's flags from the native module.
+ *
+ * A failure here leaves every asset at NO_FLAGS, which means everything is
+ * sent. That is the right way round: a phone whose flags could not be read
+ * backs up too much rather than silently missing a photo.
+ */
+async function attachFlags(summaries: AssetSummary[]): Promise<void> {
+  if (summaries.length === 0) return;
+
+  try {
+    const flags = await GedaTransfer.assetFlags(summaries.map((s) => s.id));
+    const byId = new Map(flags.map((entry) => [entry.id, entry]));
+    for (const summary of summaries) {
+      const entry = byId.get(summary.id);
+      if (entry) summary.flags = entry;
+    }
+  } catch {
+    // Left at NO_FLAGS.
+  }
+}
+
+async function listHidden(options: ListOptions): Promise<AssetSummary[]> {
+  try {
+    const hidden = await GedaTransfer.hiddenAssets(options.limit ?? 0);
+    const kinds = options.kinds ?? ['photo', 'video'];
+    return hidden
+      .filter((entry) => kinds.includes(entry.kind))
+      .filter((entry) => options.since === undefined || entry.capturedAt > options.since)
+      .map((entry) => ({
+        id: entry.id,
+        filename: entry.filename,
+        kind: entry.kind,
+        capturedAt: entry.capturedAt || undefined,
+        flags: entry,
+      }));
+  } catch {
+    return [];
+  }
 }
 
 export class AssetUnavailableError extends Error {}
 
 /**
- * Locates an asset's original file and its size.
+ * Locates the files behind one asset.
+ *
+ * One asset is not one file. A Live Photo is a still and a video, a ProRAW
+ * shot is a negative and often a JPEG, an edited photo is the capture and the
+ * render -- and which of those leave the phone is `SendOptions`, decided in
+ * `src/core/selection.ts` where it can be tested without a device.
  *
  * An asset that lives only in iCloud is skipped rather than downloaded.
  * Pulling gigabytes down over cellular to push them back up over Wi-Fi is not
  * a transfer the user asked for, and on a metered plan it is an expensive
  * surprise.
  */
-export async function resolveAsset(summary: AssetSummary): Promise<Asset> {
+export async function resolveAsset(
+  summary: AssetSummary,
+  options: SendOptions = DEFAULT_SEND_OPTIONS,
+): Promise<Asset[]> {
   const asset = new MediaAsset(summary.id);
 
   if (await asset.getIsInCloud()) {
@@ -120,19 +211,153 @@ export async function resolveAsset(summary: AssetSummary): Promise<Asset> {
     );
   }
 
-  const uri = await asset.getUri();
-  const file = new File(uri);
-  const size = file.size;
+  const { chosen, flags } = await choose(summary, options);
+
+  // The resource `getUri` would return is free -- it is a path into the
+  // library, not a copy. Everything else has to be written out through
+  // PHAssetResourceManager, which is a full copy, and that is the price of
+  // the option that asked for it. So the free one stays free even when it is
+  // one member of a pair: a Live Photo must not cost a copy of its still as
+  // well as its video (docs/PERFORMANCE.md).
+  if (chosen.length === 0) return [await fromLibrary(summary, undefined)];
+
+  const paired = chosen.length > 1;
+  const out: Asset[] = [];
+  for (const resource of chosen) {
+    if (!needsExport(summary.kind, flags, resource)) {
+      out.push(await fromLibrary(summary, resource, paired));
+    } else {
+      out.push(await exportResource(summary, resource, paired));
+    }
+  }
+  return out;
+}
+
+/** The resources this asset should yield, and the flags they were chosen by. */
+async function choose(
+  summary: AssetSummary,
+  options: SendOptions,
+): Promise<{ chosen: Chosen[]; flags: AssetFlags }> {
+  try {
+    const resources = await GedaTransfer.assetResources(summary.id);
+    // Whether the asset has edits is knowable only from its resources, and
+    // listing deliberately does not pay for that lookup. It is free here.
+    const flags: AssetFlags = {
+      ...summary.flags,
+      hasAdjustments: resources.some((resource) => resource.type === 'adjustmentData'),
+    };
+    return { chosen: chooseResources(resources, flags, options, summary.kind), flags };
+  } catch {
+    // No resource list means no choice to make: send the asset as the library
+    // presents it, which is what every version before P8 did.
+    return { chosen: [], flags: summary.flags };
+  }
+}
+
+/**
+ * Whether a chosen resource has to be copied out of the library.
+ *
+ * `getUri` returns the asset's current representation -- the render when there
+ * are edits, the capture when there are not. Anything else has no file URL of
+ * its own and can only be reached through PHAssetResourceManager.
+ */
+function needsExport(
+  kind: 'photo' | 'video',
+  flags: AssetFlags,
+  chosen: Chosen,
+): boolean {
+  const current = flags.hasAdjustments
+    ? kind === 'video'
+      ? 'fullSizeVideo'
+      : 'fullSizePhoto'
+    : kind === 'video'
+      ? 'video'
+      : 'photo';
+  return chosen.type !== current;
+}
+
+async function fromLibrary(
+  summary: AssetSummary,
+  chosen: Chosen | undefined,
+  paired = false,
+): Promise<Asset> {
+  const uri = await new MediaAsset(summary.id).getUri();
+  const size = new File(uri).size;
   if (size === null || size === undefined) {
     throw new AssetUnavailableError(`${summary.filename} could not be read from the library.`);
   }
 
   return {
     id: summary.id,
-    filename: summary.filename,
+    // The resource's own name when there is one: `IMG_0042.DNG` and
+    // `IMG_0042.HEIC` are different files and must not arrive under one name.
+    filename: chosen?.filename ?? summary.filename,
     filePath: uri,
     size,
-    kind: summary.kind,
+    kind: chosen?.kind ?? summary.kind,
     capturedAt: summary.capturedAt,
+    // A lone file carries no pair id: the receiver would otherwise reserve a
+    // basename for a pair that has only one member.
+    pairId: paired ? summary.id : undefined,
+    pairRole: paired ? chosen?.role : undefined,
+    resourceType: chosen?.type,
   };
+}
+
+async function exportResource(
+  summary: AssetSummary,
+  chosen: Chosen,
+  paired: boolean,
+): Promise<Asset> {
+  const directory = exportDirectory();
+  // The asset id and the resource type together: two resources of one asset
+  // must not collide, and a re-run must overwrite rather than accumulate.
+  const path = `${directory}/${safeName(summary.id)}-${chosen.type}-${safeName(chosen.filename)}`;
+
+  const size = await GedaTransfer.exportResource(summary.id, chosen.type, path);
+
+  return {
+    id: summary.id,
+    filename: chosen.filename,
+    filePath: path,
+    size: size || chosen.size,
+    kind: chosen.kind,
+    capturedAt: summary.capturedAt,
+    pairId: paired ? summary.id : undefined,
+    pairRole: paired ? chosen.role : undefined,
+    resourceType: chosen.type,
+    staged: true,
+  };
+}
+
+/**
+ * Deletes a copy this app made, if it made one.
+ *
+ * Every caller that resolves an asset must call this when it has finished
+ * with it. A Live Photo's video is tens of megabytes, and a library import
+ * that left one behind per photo would fill the phone.
+ */
+export function release(asset: Asset): void {
+  if (!asset.staged) return;
+  try {
+    const file = new File(asset.filePath);
+    if (file.exists) file.delete();
+  } catch {
+    // A copy that will not delete is not worth failing a transfer over; the
+    // name is deterministic, so the next run overwrites it.
+  }
+}
+
+/** Where copies of library resources are written. */
+function exportDirectory(): string {
+  const dir = new Directory(Paths.cache, 'geda-resources');
+  // In the cache directory on purpose: iOS may reclaim it under storage
+  // pressure, and every file in it is a copy of something the library still
+  // holds. Losing one costs a re-export, never a photo.
+  if (!dir.exists) dir.create({ intermediates: true });
+  return decodeURIComponent(dir.uri.replace(/^file:\/\//, '')).replace(/\/$/, '');
+}
+
+function safeName(value: string): string {
+  return value.replace(/[^A-Za-z0-9._-]/g, '_');
 }

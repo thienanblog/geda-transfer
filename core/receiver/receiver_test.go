@@ -127,6 +127,43 @@ func meta(pairs map[string]string) string {
 	return strings.Join(parts, ",")
 }
 
+// docs/PROTOCOL.md §5.1 spells the creation endpoint without a trailing
+// slash, and a third-party client reading the spec would send exactly that.
+// Left to the mux it is a redirect, and a client that replays a redirected
+// POST as a GET has its upload refused with a 405 that explains nothing.
+func TestCreateAcceptsThePathWithoutItsTrailingSlash(t *testing.T) {
+	h := newHarness(t)
+
+	for _, path := range []string{
+		receiver.UploadPath,
+		strings.TrimSuffix(receiver.UploadPath, "/"),
+	} {
+		t.Run(path, func(t *testing.T) {
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, h.URL+path, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Authorization", "Bearer "+testToken)
+			req.Header.Set("Tus-Resumable", "1.0.0")
+			req.Header.Set("Upload-Length", "5")
+			req.Header.Set("Upload-Metadata", meta(map[string]string{"filename": "IMG_1.HEIC"}))
+
+			// No redirect is followed: the request has to be answered where it
+			// was sent, or a client that does not replay POSTs is broken.
+			resp := h.do(req)
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusCreated {
+				body, _ := io.ReadAll(resp.Body)
+				t.Fatalf("POST %s: status %d, body %s", path, resp.StatusCode, body)
+			}
+			if resp.Header.Get("Location") == "" {
+				t.Fatalf("POST %s: no Location header", path)
+			}
+		})
+	}
+}
+
 // create starts a tus upload and returns its location.
 func (h *harness) create(size int, metadata map[string]string) string {
 	h.t.Helper()

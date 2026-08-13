@@ -19,6 +19,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/geda/geda-transfer/core/formats"
 )
 
 func writeConf(t *testing.T, body string) string {
@@ -199,6 +201,8 @@ func TestSetAcceptsEveryDocumentedKey(t *testing.T) {
 		"mdns":            "true",
 		"discovery":       "false",
 		"naming_template": "{original_name}.{ext}",
+		"output_preset":   "compatible",
+		"output_matrix":   "heic=sidecar,video=replace",
 		"log_level":       "debug",
 		"control_socket":  "/run/geda/gedad.sock",
 	}
@@ -212,5 +216,80 @@ func TestSetAcceptsEveryDocumentedKey(t *testing.T) {
 		if err := cfg.Set(key, value); err != nil {
 			t.Errorf("Set(%q): %v", key, err)
 		}
+	}
+}
+
+func TestOutputPolicy(t *testing.T) {
+	// Saying nothing about output leaves the ledger alone, which is what a
+	// desktop-managed receiver and a fresh install both want.
+	cfg := Default()
+	cfg.StateDir = t.TempDir()
+	if err := cfg.Resolve(); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.OutputPolicy() != nil {
+		t.Fatal("an unset output_preset produced a policy; it would overwrite the ledger")
+	}
+
+	cfg.OutputPreset = formats.PresetCompatible
+	if err := cfg.Resolve(); err != nil {
+		t.Fatal(err)
+	}
+	policy := cfg.OutputPolicy()
+	if policy == nil || policy.Action(formats.ClassHEIC) != formats.ActionSidecar {
+		t.Fatalf("compatible resolved to %+v", policy)
+	}
+}
+
+func TestOutputMatrix(t *testing.T) {
+	cfg := Default()
+	cfg.StateDir = t.TempDir()
+	cfg.OutputPreset = formats.PresetCustom
+	if err := cfg.Set("output_matrix", "heic=sidecar, video = replace"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Resolve(); err != nil {
+		t.Fatal(err)
+	}
+
+	policy := cfg.OutputPolicy()
+	if policy.Action(formats.ClassHEIC) != formats.ActionSidecar {
+		t.Fatalf("heic is %q", policy.Action(formats.ClassHEIC))
+	}
+	if policy.Action(formats.ClassVideo) != formats.ActionReplace {
+		t.Fatalf("video is %q", policy.Action(formats.ClassVideo))
+	}
+}
+
+func TestOutputConfigRejectsWhatCannotWork(t *testing.T) {
+	for name, mutate := range map[string]func(*Config){
+		"unknown preset": func(c *Config) { c.OutputPreset = "smallest" },
+		"converting a raw negative": func(c *Config) {
+			c.OutputPreset = formats.PresetCustom
+			c.OutputMatrix = map[formats.Class]formats.Action{formats.ClassRAW: formats.ActionReplace}
+		},
+		// A matrix under a named preset would be silently ignored, and the
+		// photos it was meant to govern would be a month gone before anybody
+		// noticed.
+		"a matrix the preset ignores": func(c *Config) {
+			c.OutputPreset = formats.PresetCompatible
+			c.OutputMatrix = map[formats.Class]formats.Action{formats.ClassHEIC: formats.ActionReplace}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := Default()
+			cfg.StateDir = t.TempDir()
+			mutate(&cfg)
+			if err := cfg.Resolve(); err == nil {
+				t.Fatal("expected an error")
+			}
+		})
+	}
+}
+
+func TestSetMatrixRejectsNonsense(t *testing.T) {
+	var cfg Config
+	if err := cfg.Set("output_matrix", "heic sidecar"); err == nil {
+		t.Fatal("a matrix entry with no = was accepted")
 	}
 }

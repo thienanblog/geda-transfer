@@ -196,3 +196,72 @@ A table with only successes in it is not evidence. Record the run where the
 phone was on cellular, or where the app was force-quit at the wrong moment, or
 where the photo library permission had been denied — those are the paths this
 direction actually fails on.
+
+---
+
+## P8 gate — format handling
+
+**The gate (docs/PLAN.md):** Live Photo round-trips as a linked pair; ProRAW
+keeps its DNG.
+
+Unlike P4, P5, and P7, both halves of this sentence are decided by this
+repository rather than by a phone, and `scripts/verify-p8.sh` checks both for
+real: a Live Photo's HEIC and MOV uploaded as one pair to a receiver over
+pinned TLS, and a ProRAW DNG beside them, under every output preset — including
+the one whose whole purpose is to delete originals — and twice over, once with
+no converter installed and once with one.
+
+So there is nothing here that CI cannot prove. What is left for a device is
+narrower and worth doing exactly once: that the *phone* produces what the
+receiver is being tested against. iOS decides which `PHAssetResource`s a Live
+Photo and a ProRAW shot actually have, and the only way to know the selection
+rules match a real library is to point them at one.
+
+Conversion timings belong here too. The receiver converts after receipt, on a
+real CPU, and how long that takes on the machine somebody actually uses is the
+difference between "Compatible" being a reasonable default to suggest and being
+a setting that makes a laptop unusable for twenty minutes after every backup.
+
+### How to run it
+
+1. Build the app and put it on a phone:
+   ```bash
+   cd mobile && npx eas build --profile development --platform ios
+   ```
+2. On the phone, take **a Live Photo** and **a ProRAW shot** (Settings ›
+   Camera › Formats › Apple ProRAW). Edit one of the Live Photos, so the
+   edited-versus-original path is exercised too.
+3. Install the converters on the computer, or note that you did not:
+   ```bash
+   brew install ffmpeg libheif
+   ```
+4. Send with the default preset (**Keep originals**), and look in the
+   destination folder:
+   - `…_IMG_xxxx.HEIC` and `…_IMG_xxxx.MOV`, the same name side by side.
+     Dropping the pair into Photos on the Mac should produce one Live Photo,
+     not two items.
+   - `…_IMG_yyyy.DNG`, opening in Lightroom or Photoshop as a raw negative
+     with its exposure still adjustable.
+5. Switch to **Also save a copy anything can open** and send a second batch.
+   A `.jpg` appears beside the HEIC, the HEIC is still there, and the DNG is
+   untouched. Time how long the conversions take to drain.
+6. Switch to **Convert and delete the original** and send a third batch. The
+   Live Photo's two files must **still both be there** — a pair member is
+   never replaced — and the DNG must still be there. A lone photo, not part of
+   any pair, is the one that should have been replaced.
+7. Verify rather than trusting that it looks right:
+   ```bash
+   shasum -a 256 '…_IMG_yyyy.DNG'
+   ```
+   against the DNG exported from the phone through Files.
+
+### Results
+
+| Date | Device | iOS | Receiver | Converters | Live Photo pair intact | ProRAW kept its DNG | Edited version correct | Preset | Conversion time | Originals kept | Notes |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| _no run recorded yet_ | | | | | | | | | | | |
+
+A table with only successes in it is not evidence. Record the run where ffmpeg
+was missing, where the phone had a burst of forty frames in it, where a ProRAW
+shot had been edited, and where the destination already held a file with the
+name a conversion wanted — those are the paths this phase actually fails on.

@@ -4,6 +4,7 @@
 // The Go side, wrapped so the rest of the app never touches `window.go`.
 
 import type {
+  Conversion,
   Device,
   GoApp,
   HistoryEntry,
@@ -47,6 +48,7 @@ export const api = {
   outbox: (deviceID: string): Promise<QueuedFile[]> => backend().Outbox(deviceID),
   cancelSend: (deviceID: string, id: string): Promise<void> => backend().CancelSend(deviceID, id),
   clearSent: (deviceID: string): Promise<number> => backend().ClearSent(deviceID),
+  conversions: (limit = 50): Promise<Conversion[]> => backend().Conversions(limit),
   finishOnboarding: (): Promise<void> => backend().FinishOnboarding(),
 };
 

@@ -174,7 +174,18 @@ func New(cfg Config) (*Server, error) {
 	// code -- because a device that has no token yet is the entire point.
 	s.mux.HandleFunc("POST /v1/pair", s.handlePair)
 	s.mux.Handle("POST /v1/have", s.authenticated(http.HandlerFunc(s.handleHave)))
-	s.mux.Handle(UploadPath, s.authenticated(http.StripPrefix(strings.TrimSuffix(UploadPath, "/"), handler)))
+	uploads := s.authenticated(http.StripPrefix(strings.TrimSuffix(UploadPath, "/"), handler))
+	s.mux.Handle(UploadPath, uploads)
+
+	// The same handler, again, for the creation path without its trailing
+	// slash -- which is how docs/PROTOCOL.md §5.1 spells it.
+	//
+	// Left to the mux, that path is a redirect to add the slash, and a client
+	// that replays a redirected POST as a GET has its upload refused with a
+	// 405 whose body says only "method not allowed". Routing it explicitly
+	// costs one line and removes a failure whose cause is invisible from
+	// either end.
+	s.mux.Handle("POST "+strings.TrimSuffix(UploadPath, "/"), uploads)
 
 	// Desktop to mobile. The phone pulls, because nothing can push to a
 	// suspended iOS app (AGENTS.md §3.7). Every one of these is scoped to the

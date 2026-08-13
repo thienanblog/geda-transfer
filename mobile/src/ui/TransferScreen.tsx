@@ -39,6 +39,7 @@ export function TransferScreen({
   useEffect(() => {
     const run = new Transfer({
       receiver: request.receiver,
+      send: request.send,
       onChange: setSnapshot,
     });
     transfer.current = run;

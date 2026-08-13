@@ -35,6 +35,7 @@ import (
 	"strings"
 
 	"github.com/geda/geda-transfer/core/discovery"
+	"github.com/geda/geda-transfer/core/formats"
 	"github.com/geda/geda-transfer/core/naming"
 	"github.com/geda/geda-transfer/core/service"
 	"github.com/geda/geda-transfer/core/store"
@@ -55,9 +56,11 @@ const (
 
 // Settings is everything the user can change from the app's own window.
 //
-// The naming template is not here: core owns it, validates it, and stores it
-// under its own key, so that gedad and the desktop cannot disagree about what
-// a template means.
+// Two of the fields are not really this package's: the naming template and the
+// output policy are core's, validated by core and stored under core's own
+// keys, so that gedad and the desktop reading one ledger cannot disagree about
+// what a receiver does. They are carried here only so the settings screen has
+// one object to load and save.
 type Settings struct {
 	// Name is what phones see when choosing a destination.
 	Name string `json:"name"`
@@ -88,6 +91,15 @@ type Settings struct {
 	// screen is one object, but it is read from and written to core's key.
 	Template string `json:"template"`
 
+	// OutputPreset and OutputMatrix are what the receiver does with the files
+	// it stores. Like the template they are core's, under core's keys, so
+	// that gedad reading the same ledger sees the same policy.
+	//
+	// OutputMatrix is only consulted when the preset is "custom", which is
+	// what the advanced per-type table saves as.
+	OutputPreset string                           `json:"output_preset"`
+	OutputMatrix map[formats.Class]formats.Action `json:"output_matrix,omitempty"`
+
 	// AllowEphemeralPort permits Port to be 0, meaning "any free port".
 	//
 	// It exists for the phase gate, which has to run on a machine that may
@@ -110,6 +122,11 @@ func Default() Settings {
 		MDNS:      true,
 		Discovery: true,
 		Template:  DefaultTemplate,
+		// Originals, untouched. Converting is opt-in for the same reason
+		// every destructive default is off (AGENTS.md §4): the person who
+		// wants a JPEG copy knows they want one, and the person who does not
+		// would never have asked for their library to be re-encoded.
+		OutputPreset: formats.PresetOriginal,
 	}
 }
 
@@ -243,6 +260,21 @@ func Load(ctx context.Context, db *store.DB) (Settings, error) {
 		}
 	}
 
+	// The output policy is core's too, and read through core's own decoder so
+	// that a value this version does not understand degrades to "keep the
+	// originals" here exactly as it does at the moment a file is committed.
+	storedPreset, _, err := get(formats.SettingPreset)
+	if err != nil {
+		return Settings{}, err
+	}
+	storedMatrix, _, err := get(formats.SettingMatrix)
+	if err != nil {
+		return Settings{}, err
+	}
+	policy := formats.Unmarshal(storedPreset, storedMatrix)
+	s.OutputPreset = policy.Preset
+	s.OutputMatrix = policy.Matrix
+
 	// The template is core's, under core's key, so that gedad reading the same
 	// ledger sees the same value.
 	tmpl, err := db.Setting(ctx, templateKey)
@@ -280,6 +312,14 @@ func Save(ctx context.Context, db *store.DB, s Settings) error {
 		keyOnboarded: boolValue(s.Onboarded),
 		templateKey:  strings.TrimSpace(s.Template),
 	}
+
+	preset, matrix, err := s.Policy().Marshal()
+	if err != nil {
+		return err
+	}
+	values[formats.SettingPreset] = preset
+	values[formats.SettingMatrix] = matrix
+
 	for key, value := range values {
 		if err := db.SetSetting(ctx, key, value); err != nil {
 			return fmt.Errorf("save setting %s: %w", key, err)
@@ -316,7 +356,19 @@ func (s Settings) Validate() error {
 	if err := naming.Validate(strings.TrimSpace(s.Template)); err != nil {
 		return err
 	}
+	if err := s.Policy().Validate(); err != nil {
+		return err
+	}
 	return nil
+}
+
+// Policy is the output policy these settings express.
+func (s Settings) Policy() formats.Policy {
+	preset := strings.TrimSpace(s.OutputPreset)
+	if preset == "" {
+		preset = formats.PresetOriginal
+	}
+	return formats.Policy{Preset: preset, Matrix: s.OutputMatrix}
 }
 
 // ServiceConfig turns settings into what core needs to open a receiver.
@@ -337,9 +389,10 @@ func (s Settings) ServiceConfig(stateDir, version string) service.Config {
 // NeedsRestart reports whether moving from a to b requires the receiver to be
 // rebuilt, as opposed to being a change the running one can absorb.
 //
-// Only the template can be changed in place: storage reads it from the ledger
-// on every commit. Everything else was handed to the receiver when it was
-// built.
+// The template and the output policy can both be changed in place: storage
+// reads them from the ledger on every commit, so the next photo to arrive is
+// governed by what the user just saved. Everything else was handed to the
+// receiver when it was built.
 func NeedsRestart(a, b Settings) bool {
 	if a.Name != b.Name || a.Dest != b.Dest || a.Port != b.Port {
 		return true

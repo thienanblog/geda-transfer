@@ -39,6 +39,7 @@ import (
 	"strings"
 
 	"github.com/geda/geda-transfer/core/discovery"
+	"github.com/geda/geda-transfer/core/formats"
 )
 
 // EnvPrefix prefixes the environment variable for every key.
@@ -88,6 +89,15 @@ type Config struct {
 	// NamingTemplate, when set, is written to the ledger at startup so the
 	// file is the source of truth on a headless box.
 	NamingTemplate string
+
+	// OutputPreset is what the receiver does with the files it stores:
+	// original, compatible, space-saving, or custom. Empty leaves whatever is
+	// in the ledger alone, which on a fresh install is "original".
+	OutputPreset string
+
+	// OutputMatrix is the per-class table behind a custom preset, written
+	// `heic=sidecar,video=replace`. Only read when OutputPreset is custom.
+	OutputMatrix map[formats.Class]formats.Action
 
 	// LogLevel is one of debug, info, warn, error.
 	LogLevel string
@@ -156,6 +166,8 @@ var keys = map[string]func(*Config, string) error{
 	"mdns":            func(c *Config, v string) error { return setBool(&c.MDNS, v) },
 	"discovery":       func(c *Config, v string) error { return setBool(&c.Discovery, v) },
 	"naming_template": func(c *Config, v string) error { c.NamingTemplate = v; return nil },
+	"output_preset":   func(c *Config, v string) error { c.OutputPreset = strings.ToLower(v); return nil },
+	"output_matrix":   func(c *Config, v string) error { return setMatrix(&c.OutputMatrix, v) },
 	"log_level":       func(c *Config, v string) error { c.LogLevel = v; return nil },
 	"control_socket":  func(c *Config, v string) error { c.ControlSocket = v; return nil },
 }
@@ -302,6 +314,51 @@ func (c *Config) Resolve() error {
 	default:
 		return fmt.Errorf("log_level %q is not one of debug, info, warn, error", c.LogLevel)
 	}
+
+	if policy := c.OutputPolicy(); policy != nil {
+		if err := policy.Validate(); err != nil {
+			return fmt.Errorf("output_preset: %w", err)
+		}
+		if len(c.OutputMatrix) > 0 && c.OutputPreset != formats.PresetCustom {
+			// Refused rather than ignored. Somebody who wrote out a matrix
+			// meant it to take effect, and a preset quietly overriding it is
+			// the kind of thing discovered a month of photos later.
+			return fmt.Errorf("output_matrix only applies when output_preset is %q, not %q",
+				formats.PresetCustom, c.OutputPreset)
+		}
+	}
+	return nil
+}
+
+// OutputPolicy is the configured policy, or nil when the file says nothing
+// about output and the ledger should be left as it is.
+func (c Config) OutputPolicy() *formats.Policy {
+	if strings.TrimSpace(c.OutputPreset) == "" {
+		return nil
+	}
+	return &formats.Policy{Preset: c.OutputPreset, Matrix: c.OutputMatrix}
+}
+
+// setMatrix parses `heic=sidecar,video=replace`.
+//
+// JSON would have matched what the ledger stores, but this file is edited over
+// SSH in whatever editor a NAS happens to have, and quoting braces in a
+// `key = value` line is not something to ask of anybody.
+func setMatrix(dst *map[formats.Class]formats.Action, v string) error {
+	out := make(map[formats.Class]formats.Action)
+	for _, part := range strings.Split(v, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		class, action, found := strings.Cut(part, "=")
+		if !found {
+			return fmt.Errorf("expected `class=action` in output_matrix, got %q", part)
+		}
+		out[formats.Class(strings.ToLower(strings.TrimSpace(class)))] =
+			formats.Action(strings.ToLower(strings.TrimSpace(action)))
+	}
+	*dst = out
 	return nil
 }
 

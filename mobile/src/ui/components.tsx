@@ -82,6 +82,53 @@ export function Muted({ children }: { children: ReactNode }) {
   return <Text style={styles.muted}>{children}</Text>;
 }
 
+/**
+ * A row of mutually exclusive choices.
+ *
+ * A segmented row rather than a picker sheet: these settings are read as often
+ * as they are changed -- "am I sending my negatives?" is the question -- and a
+ * control that hides its own value behind a tap does not answer it.
+ */
+export function Choice<T extends string>({
+  label,
+  hint,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  hint?: string;
+  value: T;
+  options: [T, string][];
+  onChange: (value: T) => void;
+}) {
+  return (
+    <View style={styles.choice}>
+      <Text style={styles.choiceLabel}>{label}</Text>
+      <View style={styles.segments}>
+        {options.map(([option, title]) => {
+          const selected = option === value;
+          return (
+            <Pressable
+              key={option}
+              accessibilityRole="radio"
+              accessibilityState={{ selected }}
+              accessibilityLabel={`${label}: ${title}`}
+              onPress={() => onChange(option)}
+              style={[styles.segment, selected && styles.segmentSelected]}
+            >
+              <Text style={[styles.segmentLabel, selected && styles.segmentLabelSelected]}>
+                {title}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+      {hint ? <Muted>{hint}</Muted> : null}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
@@ -117,4 +164,23 @@ const styles = StyleSheet.create({
   statValue: { color: colors.text, fontSize: 20, fontWeight: '600' },
   statLabel: { color: colors.muted, fontSize: 12 },
   muted: { color: colors.muted, fontSize: 13, lineHeight: 18 },
+  choice: { gap: spacing.sm - 2 },
+  choiceLabel: { color: colors.text, fontSize: 15, fontWeight: '600' },
+  segments: {
+    flexDirection: 'row',
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+    overflow: 'hidden',
+  },
+  segment: {
+    flex: 1,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.sm,
+    alignItems: 'center',
+    backgroundColor: colors.background,
+  },
+  segmentSelected: { backgroundColor: colors.accent },
+  segmentLabel: { color: colors.text, fontSize: 13, fontWeight: '500' },
+  segmentLabelSelected: { color: '#06101F', fontWeight: '600' },
 });

@@ -93,6 +93,22 @@ Native changes are **not** picked up by Fast Refresh; rebuild.
   That is why listing uses `exeForMetadata` — which never resolves a file path
   — and why resolving happens in a bounded pool, measured separately from the
   transfer.
+- **One asset is several files.** A Live Photo is a still and a video, a ProRAW
+  shot is a negative and often a JPEG, an edited photo is the capture and the
+  render. `resolveAsset` returns an **array**, and every member of it carries
+  the same `pairId` so the receiver gives them one basename. Which resources
+  leave the phone is decided in `src/core/selection.ts`, which has no React
+  Native imports and is therefore tested without a device — the rules are where
+  a backup quietly loses somebody's negatives.
+- **Only the asset's current representation has a file URL.** Everything else
+  has to be written out through `PHAssetResourceManager`, which is a full copy.
+  So the zero-copy path is kept for the ordinary photo, the copy is paid only
+  by the options that ask for more, and whoever resolved the asset must call
+  `release()` when the upload is done. A Live Photo's video is tens of
+  megabytes; one library import that leaked them would fill the phone.
+- **Never transcode on the phone** (AGENTS.md §3.3). If a user wants a JPEG,
+  the receiver makes one after the file arrives. There is no code path here
+  that re-encodes anything, and adding one is not an optimisation.
 - **Assets in iCloud are skipped, not downloaded.** Pulling gigabytes down over
   cellular to push them back up is not the transfer the user asked for.
 - **Local Network permission** (iOS 14+) covers any connection to a
