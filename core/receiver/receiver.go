@@ -39,6 +39,7 @@ import (
 
 	tus "github.com/tus/tusd/v2/pkg/handler"
 
+	"github.com/geda/geda-transfer/core/events"
 	"github.com/geda/geda-transfer/core/identity"
 	"github.com/geda/geda-transfer/core/pairing"
 	"github.com/geda/geda-transfer/core/storage"
@@ -86,6 +87,11 @@ type Config struct {
 
 	// Logger receives operational messages. Defaults to slog.Default().
 	Logger *slog.Logger
+
+	// Events, when set, receives the lifecycle of every upload. It is what a
+	// desktop window showing a transfer in progress subscribes to. Publishing
+	// never blocks, so a UI that stops reading cannot slow a transfer down.
+	Events *events.Bus
 }
 
 // Server is a running receiver.
@@ -124,7 +130,7 @@ func New(cfg Config) (*Server, error) {
 	s := &Server{
 		cfg:      cfg,
 		log:      log,
-		uploads:  newUploadStore(cfg.Files),
+		uploads:  newUploadStore(cfg.Files, cfg.Events),
 		offers:   pairing.NewOffers(nil),
 		lastSeen: make(map[string]time.Time),
 	}

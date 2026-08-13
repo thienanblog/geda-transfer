@@ -53,7 +53,7 @@ type harness struct {
 	t     *testing.T
 }
 
-func newHarness(t *testing.T) *harness {
+func newHarness(t *testing.T, opts ...func(*receiver.Config)) *harness {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -75,14 +75,19 @@ func newHarness(t *testing.T) *harness {
 		t.Fatal(err)
 	}
 
-	srv, err := receiver.New(receiver.Config{
+	cfg := receiver.Config{
 		DeviceID: "receiver-1",
 		Name:     "Studio Mac",
 		DB:       db,
 		Files:    files,
 		Identity: id,
 		Logger:   slog.New(slog.DiscardHandler),
-	})
+	}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
+	srv, err := receiver.New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

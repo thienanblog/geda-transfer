@@ -400,3 +400,152 @@ budget the system may withdraw, and the transfer itself belongs to
 `nsurlsessiond` regardless of whether the app is alive to watch it
 (AGENTS.md §3.2). `requiresExternalPower` is what makes running it acceptable
 at all.
+
+## 2026-08-13 — The receiver's wiring moved to core/service, and gedad uses it
+`cli/internal/daemon` assembled the ledger, the identity, the storage layout,
+the HTTP server, and the discovery responders into one running receiver. The
+desktop app needs exactly that, and copying it would have put the product's
+behaviour in two places — where a fix to the discovery lifecycle lands on the
+NAS and not on the desktop, and a state directory means something slightly
+different depending on which binary made it.
+
+So the wiring is `core/service` and both front ends run it. What stayed in
+`cli/` is what only a headless box has: the `key = value` file and the control
+socket. `control.Status`, `control.Offer`, and `control.Device` are now type
+aliases for core's, so a field added in core cannot be silently missing from
+`gedad status -json`.
+
+## 2026-08-13 — The receiver publishes what it is doing, and never waits for a listener
+A live transfer view cannot be built from the ledger: by the time a row exists
+the interesting part is over. `core/events` is a bus the receiver publishes
+each upload's lifecycle to.
+
+One rule governs it: **a subscriber must never be able to slow a transfer
+down**. Publishing is non-blocking and a subscriber that falls behind loses
+events rather than applying back-pressure to the code writing bytes to disk. A
+dropped progress event costs a stale percentage for a fraction of a second; a
+blocked one costs throughput, which is the headline feature.
+
+Progress is reported from *inside* the copy, not per request. One tus PATCH
+carries a whole file, so without this a 4K video would move from 0% to 100% in
+one step. It is rate-limited to five updates a second — past what anyone can
+read, and cheap enough to be invisible.
+
+## 2026-08-13 — The desktop has no config file; its settings live in the ledger
+gedad has one because a NAS is administered over SSH. A desktop app is
+administered through its own window, and a second file that the window and a
+text editor could both write would only create a question about which of them
+wins. The ledger already has to survive updates, so the settings live there,
+next to the device id which is stored for the same reason.
+
+The filename template is the exception, and deliberately: it stays under
+core's own key, so that gedad and the desktop reading the same ledger cannot
+disagree about what a template means.
+
+## 2026-08-13 — Changing the destination restarts the receiver rather than swapping it
+The receiver is handed its destination when it is built, and tusd holds it for
+the life of an upload. Swapping it underneath a transfer in flight would write
+half a file to each of two directories. Saving a new destination therefore
+stops the service and opens another — which is quick, in-process, and costs
+nothing, because the identity and the ledger are on disk and no phone has to
+re-pair.
+
+Only the naming template is applied in place: storage reads it from the ledger
+on every commit.
+
+## 2026-08-13 — Closing the window does not stop receiving, so there is a tray icon
+A desktop cannot be woken by a phone: there is no push channel, and a receiver
+that is not running is not discoverable at all. "Send from my phone" therefore
+means "the app was already running", which is why closing the window leaves it
+resident and why "Start when I log in" is offered on the first settings screen
+rather than buried.
+
+An app that stays resident after its window is dismissed and shows nothing is
+indistinguishable from one that leaked. The tray icon is what makes it honest:
+the app is visibly still there, it says what it is doing, and Quit is one
+click. The tray is `systray.Register`, not `systray.Run` — Run creates its own
+event loop, which on macOS means a second NSApplication fighting the window's.
+
+## 2026-08-13 — The desktop's Go layer is testable without a window
+`internal/app` does not import Wails. Everything the window can ask for is a
+method that a test can call with no toolkit, and the three things that
+genuinely need one — a folder picker, an event channel to the page, and the
+tray — are interfaces satisfied by the shell in `main`.
+
+That is what makes P6's gate scriptable at all. `internal/gate` drives those
+same bindings with a real pinned TLS client standing in for a phone: it takes
+the code off the first screen, decodes it as a camera would, redeems it,
+uploads a file, and checks the bytes on disk. It is not a test of the window.
+It is a test that there is nothing behind the window for the window to get
+wrong.
+
+## 2026-08-13 — The desktop files per device by default; gedad does not
+`{device}/{yyyy}/…` is the desktop's default template because a desktop
+receives from a household's worth of phones into a folder somebody browses in
+Finder. That is P6's "per-device folders", and it is expressed as a template
+rather than as a code path, so it goes through the same engine, the same
+validation, and the same collision rules as anything a user types.
+
+## 2026-08-13 — P6's gate is a person, and the script says which half it proves
+"A person who has never seen the app can pair and transfer without
+instructions" cannot be asserted by a script. `scripts/verify-p6.sh` asserts
+everything that person depends on — the layering, the build, the tested logic,
+a zero-configuration first run, a real pairing and upload through the app's
+own bindings, and the settings a first-timer is most likely to change — and
+then says plainly that the half which is a person is not claimed. That half is
+recorded in docs/PERFORMANCE.md by somebody who watched one.
+
+## 2026-08-13 — A development build keeps its own state directory
+`wails dev` compiles with the `dev` build tag, so the separation is by
+construction rather than by remembering to set an environment variable: the
+state directory becomes `geda-dev`, the single-instance lock is qualified, and
+the window is titled "(dev)".
+
+It matters more here than in most apps. Pairing is the thing being worked on,
+and pairing writes device rows and a TLS identity into the ledger. A developer
+testing it against their real state accumulates junk devices in the app they
+actually use — and a mistake that damages the identity makes every phone they
+own fail with a pin mismatch that has no override (AGENTS.md §3.5).
+
+`GEDA_STATE_DIR` is honoured exactly as given in both variants, unsuffixed:
+somebody who named a directory meant that directory.
+
+## 2026-08-13 — The window is tested too, in jsdom, against a stubbed bridge
+The Go gate proves the receiver works. It cannot prove the window *says* so,
+and P6's gate is about what a person reads. So the views have their own tests:
+they run the real view code against a fake `window.go`, and assert the things a
+first-time user depends on — that the first screen shows a code and where files
+will go, that an empty transfer list says what to do next rather than only
+reporting an absence, that "already had it" is distinguished from "stored" and
+from "failed", that a refused setting shows its reason and keeps what was
+typed, and that a cancelled folder picker does not wipe the destination.
+
+One of them is a security test rather than a usability one: filenames and
+device names come off a phone and are untrusted, so a hostile name must render
+as text. `dom.ts` sets text through `textContent` and uses `innerHTML` in
+exactly one place, with literals defined in that file.
+
+jsdom rather than a real browser: every assertion is about structure and
+wording, none of it depends on layout or on a rendering engine, and a browser
+would buy nothing and cost a download in CI.
+
+## 2026-08-13 — A gate no commit can turn green does not block CI
+P4's gate is MB/s from a physical iPhone, P5's is a force-quit run on one, and
+P6's is watching somebody who has never seen the app. `scripts/verify-p4.sh`
+used to exit 1 while `docs/PERFORMANCE.md` had no row, on the reasoning that an
+unmeasured performance gate is not a passed one. That reasoning still holds —
+but as a *required check* it made CI red on every commit since P4 merged, for a
+condition no commit could fix. A build that is always red reports nothing: the
+one real regression it catches looks exactly like the twenty runs before it.
+
+So the measurement is reported rather than asserted, which is the shape
+`verify-p5.sh` and `verify-p6.sh` already had for their own device halves. The
+blocking checks are now exactly the things a change to this repository can
+break. What is missing stays visible two ways: `scripts/check-measurements.sh
+--strict` runs in CI as a step allowed to fail, so the missing rows are on the
+page rather than in a comment, and `scripts/verify-p4.sh --require-measurement`
+still exits 1 — which is the form to run when claiming the phase is done.
+
+The tables in `docs/PERFORMANCE.md` remain the record. Nothing here lowers the
+bar for calling P4, P5, or P6 measured; it only stops a machine with no iPhone
+in it from being asked to prove something about an iPhone.

@@ -136,6 +136,67 @@ jobs:
             modules/geda-transfer/ios/GedaTransferAttributes.swift
 
 
+  desktop:
+    name: desktop (${{ matrix.os }})
+    # macOS and Windows only: the desktop app is for those two, and its
+    # webview is the platform's own. Linux would need GTK headers to build a
+    # binary nobody ships.
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: desktop/go.mod
+          cache-dependency-path: desktop/go.sum
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/frontend/package-lock.json
+
+      - name: gofmt
+        if: runner.os != 'Windows'
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "Not gofmt'd:"; echo "$unformatted"; exit 1
+          fi
+
+      # The page is embedded into the binary, so it has to exist before the Go
+      # build runs. Its own typecheck is the first thing that fails if a
+      # binding was renamed on the Go side.
+      - name: build the window
+        working-directory: desktop/frontend
+        run: |
+          npm ci
+          npm run build
+
+      - run: go vet ./...
+
+      - run: go build ./...
+
+      - run: go test -race -count=1 ./...
+
+      # A development build must keep its own state directory: pairing writes
+      # a TLS identity, and damaging the installed app's makes every paired
+      # phone fail with a pin mismatch that has no override.
+      - run: go test -count=1 -tags dev ./internal/settings/
+
+      # What the window shows, as opposed to what the receiver does.
+      - name: the window's own tests
+        working-directory: desktop/frontend
+        run: npm run test
+
+
   cross-compile:
     name: cross-compile
     runs-on: ubuntu-latest
@@ -182,10 +243,19 @@ jobs:
       # published Dockerfile builds and works.
       - run: ./scripts/verify-p3.sh
 
-      # P4's gate is a measured number from a physical iPhone, so this step
-      # fails until a run is recorded in docs/PERFORMANCE.md. That is the
-      # point: an unmeasured performance gate is not a passed one.
+      # P4's gate is a measured number from a physical iPhone. The script
+      # checks everything around it; the number itself is reported, because no
+      # commit could turn it green here and a permanently red check is one
+      # nobody reads.
       - run: ./scripts/verify-p4.sh
+
+      # Which device measurements are still missing, kept visible without
+      # blocking: this step is expected to be red until somebody with a phone
+      # records a run, and says so in its own log rather than by failing the
+      # workflow. An unmeasured gate is still not a passed one.
+      - name: recorded measurements (needs hardware, informational)
+        continue-on-error: true
+        run: ./scripts/check-measurements.sh --strict
 
   gate-p5:
     name: phase gate P5
@@ -209,6 +279,28 @@ jobs:
       # that shares nothing with the first but the URL, verified by hash. The
       # device half is a person with a phone, recorded in docs/PERFORMANCE.md.
       - run: ./scripts/verify-p5.sh
+
+  gate-p6:
+    name: phase gate P6
+    # macOS: the gate builds the desktop app, whose webview is the platform's.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: desktop/go.mod
+          cache-dependency-path: desktop/go.sum
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/frontend/package-lock.json
+
+      # Drives a real pairing and a real upload through the same bindings the
+      # window calls. The half of the gate that is a person is not claimed by
+      # the script and is recorded in docs/PERFORMANCE.md.
+      - run: ./scripts/verify-p6.sh
+
 
   licence:
     name: licence headers

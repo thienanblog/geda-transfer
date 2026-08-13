@@ -97,7 +97,7 @@ func waitReady(t *testing.T, d *Daemon) {
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		c, err := client.New(client.Config{
-			Pin:            d.ident.Pin,
+			Pin:            d.Pin(),
 			Addrs:          []string{d.Addr().String()},
 			DialTimeout:    time.Second,
 			RequestTimeout: 2 * time.Second,
@@ -130,8 +130,8 @@ func TestPairThroughTheControlSocket(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if payload.SPKI != d.ident.Pin {
-		t.Errorf("offer pins %q, the receiver's key is %q", payload.SPKI, d.ident.Pin)
+	if payload.SPKI != d.Pin() {
+		t.Errorf("offer pins %q, the receiver's key is %q", payload.SPKI, d.Pin())
 	}
 
 	c, result, err := client.PairWith(ctx, payload, client.Device{
@@ -239,7 +239,7 @@ func TestNamingTemplateIsValidatedAndStored(t *testing.T) {
 
 	d := start(t, cfg)
 
-	got, err := d.files.Template(context.Background())
+	got, err := d.Template(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,8 +296,8 @@ func TestDefaultLayout(t *testing.T) {
 	cfg := testConfig(t)
 	d := start(t, cfg)
 
-	if want := filepath.Join(cfg.StateDir, "Photos"); d.files.Root() != want {
-		t.Errorf("destination = %q, want %q", d.files.Root(), want)
+	if want := filepath.Join(cfg.StateDir, "Photos"); d.Dest() != want {
+		t.Errorf("destination = %q, want %q", d.Dest(), want)
 	}
 	for _, path := range []string{
 		filepath.Join(cfg.StateDir, "ledger.db"),

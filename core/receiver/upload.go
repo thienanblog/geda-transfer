@@ -29,6 +29,7 @@ import (
 
 	tus "github.com/tus/tusd/v2/pkg/handler"
 
+	"github.com/geda/geda-transfer/core/events"
 	"github.com/geda/geda-transfer/core/hash"
 	"github.com/geda/geda-transfer/core/storage"
 )
@@ -43,11 +44,21 @@ type uploadStore struct {
 	files *storage.Store
 	dir   string
 
+	// bus carries the lifecycle of each upload to whoever is watching, which
+	// on the desktop is a live transfer view. Nil when nobody is.
+	bus *events.Bus
+
 	// running holds in-progress hashers keyed by upload id. A hasher only
 	// helps while an upload proceeds in order within one process; anything
 	// else falls back to hashing the finished file.
 	mu      sync.Mutex
 	running map[string]*runningHash
+
+	// announced remembers which uploads this process has already reported as
+	// started, so a client sending one file in several PATCHes produces one
+	// start and not one per chunk. The value is when it was recorded, so that
+	// the sweep can drop entries for uploads nobody ever came back to finish.
+	announced map[string]time.Time
 }
 
 // runningHash tracks how much of an upload has been folded into a hasher.
@@ -56,12 +67,68 @@ type runningHash struct {
 	offset int64
 }
 
-func newUploadStore(files *storage.Store) *uploadStore {
+func newUploadStore(files *storage.Store, bus *events.Bus) *uploadStore {
 	return &uploadStore{
-		files:   files,
-		dir:     files.IncomingDir(),
-		running: make(map[string]*runningHash),
+		files:     files,
+		dir:       files.IncomingDir(),
+		bus:       bus,
+		running:   make(map[string]*runningHash),
+		announced: make(map[string]time.Time),
 	}
+}
+
+// eventFor builds the fields every event about one upload shares.
+//
+// device_id and device_name are the authenticated ones: PreUploadCreateCallback
+// overwrites whatever the client claimed before the upload is created, so a
+// watcher cannot be shown a peer's name (docs/DECISIONS.md).
+func eventFor(info tus.FileInfo) events.Event {
+	return events.Event{
+		UploadID:   info.ID,
+		DeviceID:   info.MetaData["device_id"],
+		DeviceName: info.MetaData["device_name"],
+		Name:       info.MetaData["filename"],
+		AssetKind:  info.MetaData["kind"],
+		Size:       info.Size,
+	}
+}
+
+// announce publishes a start the first time this process sees an upload move.
+//
+// It is keyed per process rather than per upload because a resume arrives at a
+// receiver that may have been restarted since the upload was created, and a
+// live view that never learns about the file would show the transfer as idle
+// while it is in fact running.
+func (s *uploadStore) announce(info tus.FileInfo, offset int64) {
+	if s.bus == nil {
+		return
+	}
+
+	s.mu.Lock()
+	_, seen := s.announced[info.ID]
+	if !seen {
+		s.announced[info.ID] = time.Now()
+	}
+	s.mu.Unlock()
+
+	if seen {
+		return
+	}
+
+	e := eventFor(info)
+	e.Kind = events.KindStarted
+	e.Offset = offset
+	s.bus.Publish(e)
+}
+
+// finish publishes the end of an upload and forgets the per-process state.
+func (s *uploadStore) finish(e events.Event) {
+	s.mu.Lock()
+	delete(s.announced, e.UploadID)
+	delete(s.running, e.UploadID)
+	s.mu.Unlock()
+
+	s.bus.Publish(e)
 }
 
 func (s *uploadStore) binPath(id string) string  { return filepath.Join(s.dir, id+".bin") }
@@ -85,6 +152,11 @@ func (s *uploadStore) NewUpload(ctx context.Context, info tus.FileInfo) (tus.Upl
 		os.Remove(s.binPath(id))
 		return nil, err
 	}
+
+	// Announced at creation rather than at the first byte so that a watcher
+	// sees the file appear while the phone is still opening the connection,
+	// which is what makes a queue of small files look like it is moving.
+	s.announce(info, 0)
 	return u, nil
 }
 
@@ -161,12 +233,6 @@ func (s *uploadStore) takeHasher(id string, size int64) *hash.Hasher {
 	return r.h
 }
 
-func (s *uploadStore) forgetHasher(id string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.running, id)
-}
-
 // upload is one in-flight file.
 type upload struct {
 	store *uploadStore
@@ -206,17 +272,39 @@ func (u *upload) WriteChunk(ctx context.Context, offset int64, src io.Reader) (i
 			u.info.ID, stat.Size(), offset)
 	}
 
-	var dst io.Writer = f
+	// A resume reaches a process that may never have seen this upload -- the
+	// receiver can have been restarted since it was created.
+	u.store.announce(u.info, offset)
+
+	writers := make([]io.Writer, 1, 3)
+	writers[0] = f
 	if h := u.store.hasherFor(u.info.ID, offset); h != nil {
 		// Hash as the bytes land, so the common case of a single streamed
 		// PATCH never needs a second pass over the file.
-		dst = io.MultiWriter(f, h)
+		writers = append(writers, h)
+	}
+
+	// One PATCH carries a whole file, so progress has to be reported from
+	// inside the copy. Without this a 4K video is one event at the end.
+	var progress *events.Progress
+	if u.store.bus != nil {
+		progress = events.NewProgress(u.store.bus, eventFor(u.info), offset)
+		writers = append(writers, progress)
+	}
+
+	var dst io.Writer = f
+	if len(writers) > 1 {
+		dst = io.MultiWriter(writers...)
 	}
 
 	n, err := io.Copy(dst, src)
 	if n > 0 {
 		u.info.Offset = offset + n
 		u.store.advanceHasher(u.info.ID, u.info.Offset)
+	}
+	if progress != nil && n > 0 {
+		// The interval will usually have swallowed the last few megabytes.
+		progress.Flush()
 	}
 	if err != nil {
 		return n, err
@@ -229,9 +317,17 @@ func (u *upload) GetReader(ctx context.Context) (io.ReadCloser, error) {
 }
 
 func (u *upload) Terminate(ctx context.Context) error {
-	u.store.forgetHasher(u.info.ID)
 	os.Remove(u.store.binPath(u.info.ID))
 	os.Remove(u.store.infoPath(u.info.ID))
+
+	// A DELETE is the sending device saying it has given up, which is not the
+	// same as an interruption: an interrupted upload keeps its bytes and can
+	// be resumed, so it is deliberately not reported as a failure.
+	e := eventFor(u.info)
+	e.Kind = events.KindFailed
+	e.Offset = u.info.Offset
+	e.Error = "the sending device cancelled the upload"
+	u.store.finish(e)
 	return nil
 }
 
@@ -246,24 +342,23 @@ func (u *upload) FinishUpload(ctx context.Context) error {
 
 	digest, err := u.digest(ctx, id, bin)
 	if err != nil {
-		return err
+		return u.failed(err)
 	}
 
 	if declared := u.info.MetaData["hash"]; declared != "" && declared != digest.Full {
-		u.store.forgetHasher(id)
 		os.Remove(bin)
 		os.Remove(u.store.infoPath(id))
-		return errChecksumMismatch
+		return u.failed(errChecksumMismatch)
 	}
 
 	in, err := incomingFrom(u.info, digest)
 	if err != nil {
-		return err
+		return u.failed(err)
 	}
 
 	committed, err := u.store.files.Commit(ctx, in, bin)
 	if err != nil {
-		return fmt.Errorf("commit upload: %w", err)
+		return u.failed(fmt.Errorf("commit upload: %w", err))
 	}
 
 	if u.info.MetaData == nil {
@@ -276,7 +371,29 @@ func (u *upload) FinishUpload(ctx context.Context) error {
 	_ = u.writeInfo()
 
 	os.Remove(u.store.infoPath(id))
+
+	e := eventFor(u.info)
+	e.Kind = events.KindFinished
+	e.Offset = u.info.Size
+	e.StoredPath = committed.Path
+	e.Deduplicated = committed.Deduplicated
+	u.store.finish(e)
 	return nil
+}
+
+// failed reports an upload that will not produce a file, and returns the error
+// unchanged so callers can stay a one-liner.
+//
+// Every exit from FinishUpload other than success goes through here: a silent
+// failure leaves a row in the live view that never resolves, which reads to
+// the user as a transfer that is still running.
+func (u *upload) failed(err error) error {
+	e := eventFor(u.info)
+	e.Kind = events.KindFailed
+	e.Offset = u.info.Offset
+	e.Error = err.Error()
+	u.store.finish(e)
+	return err
 }
 
 // digest returns the upload's digest, reusing the running hasher when it
@@ -365,6 +482,19 @@ func (s *uploadStore) sweepIncoming(maxAge time.Duration) error {
 	}
 
 	cutoff := time.Now().Add(-maxAge)
+
+	// An upload that is created and then abandoned leaves an entry behind in
+	// both in-memory maps. On a NAS running for months that is a slow leak,
+	// so it is cleared on the same schedule as the bytes it describes.
+	s.mu.Lock()
+	for id, at := range s.announced {
+		if at.Before(cutoff) {
+			delete(s.announced, id)
+			delete(s.running, id)
+		}
+	}
+	s.mu.Unlock()
+
 	var errs []error
 	for _, e := range entries {
 		info, err := e.Info()

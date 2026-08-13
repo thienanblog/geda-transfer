@@ -52,7 +52,24 @@ docker compose -f docker/compose.yml exec gedad gedad pair
 The second command draws a pairing QR code in your terminal. There is also a
 plain `gedad` binary with a systemd unit — see [cli/README.md](cli/README.md).
 
-## The app
+## The desktop app
+
+The macOS and Windows app is a [Wails](https://wails.io) shell over the same
+receiver the NAS daemon runs. It shows a pairing code for the phone's camera,
+a live view of what is arriving, the history of what has been received, and
+settings for where files go and what they are named.
+
+```
+cd desktop/frontend && npm ci && npm run build
+cd .. && wails build
+```
+
+It keeps receiving when its window is closed — a phone cannot wake a sleeping
+computer, so the app has to be running for anything to arrive — and stays
+visible in the menu bar or notification area while it does. See
+[desktop/README.md](desktop/README.md).
+
+## The mobile app
 
 The iOS app is an Expo project in [mobile/](mobile), built with a custom
 development client — Expo Go cannot load the native transfer module. See

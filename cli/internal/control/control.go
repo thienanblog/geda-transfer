@@ -37,45 +37,23 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/geda/geda-transfer/core/service"
 )
 
-// Status is what `gedad status` reports.
-type Status struct {
-	Version       string    `json:"version"`
-	DeviceID      string    `json:"device_id"`
-	Name          string    `json:"name"`
-	SPKI          string    `json:"spki"`
-	Fingerprint   string    `json:"fingerprint"`
-	Dest          string    `json:"dest"`
-	StateDir      string    `json:"state_dir"`
-	Listen        string    `json:"listen"`
-	Addrs         []string  `json:"addrs"`
-	StartedAt     time.Time `json:"started_at"`
-	PairedDevices int       `json:"paired_devices"`
-	Files         int       `json:"files"`
-	Bytes         int64     `json:"bytes"`
-}
+// The socket reports exactly what core reports. These are aliases rather than
+// copies so that a field added to a status in core cannot be silently missing
+// from `gedad status -json`, which is what somebody's monitoring script reads.
+type (
+	// Status is what `gedad status` reports.
+	Status = service.Status
 
-// Offer is a pairing invitation as the CLI renders it.
-type Offer struct {
-	URI         string    `json:"uri"`
-	SPKI        string    `json:"spki"`
-	Fingerprint string    `json:"fingerprint"`
-	Addrs       []string  `json:"addrs"`
-	ExpiresAt   time.Time `json:"expires_at"`
-}
+	// Offer is a pairing invitation, as `gedad pair` renders it.
+	Offer = service.Offer
 
-// Device is one paired device.
-type Device struct {
-	ID         string     `json:"id"`
-	Name       string     `json:"name"`
-	Platform   string     `json:"platform"`
-	PairedAt   time.Time  `json:"paired_at"`
-	LastSeenAt *time.Time `json:"last_seen_at,omitempty"`
-	Revoked    bool       `json:"revoked"`
-	Files      int        `json:"files"`
-	Bytes      int64      `json:"bytes"`
-}
+	// Device is one paired device.
+	Device = service.Device
+)
 
 // Backend is the daemon, as the control socket sees it.
 type Backend interface {
