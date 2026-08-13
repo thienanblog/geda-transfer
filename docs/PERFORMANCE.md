@@ -143,3 +143,56 @@ cannot un-know where the button is.
 
 Until this table has a row, P6's gate is met in everything the app does and
 unverified in the one thing it is actually about.
+
+---
+
+## P7 gate — desktop → mobile
+
+**The gate (docs/PLAN.md):** a 2GB ZIP lands in Files; a video lands in Photos,
+both verified.
+
+Two halves, as with P4 and P5. `scripts/verify-p7.sh` runs the protocol half in
+full — a 2 GiB file queued on a real receiver, collected over pinned TLS by a
+client that shares nothing with it but a key, interrupted at 40%, resumed by
+range, and verified against the digest the receiver published — and then stops,
+because the sentence names two places on a phone and no script can look in
+them.
+
+The transfer here is loopback, so the throughput it prints is a floor on the
+code and says nothing about a network. The number worth recording below is the
+one measured over Wi-Fi, from a computer to a phone.
+
+### How to run it
+
+1. Build the app and put it on a phone:
+   ```bash
+   cd mobile && npx eas build --profile development --platform ios
+   ```
+2. Pair it with the desktop app, then choose the phone and **Send files**: a
+   2 GB ZIP and a video shot on a real camera (so it has a capture date that is
+   not today).
+3. Open the app on the phone. It will start collecting and say so.
+4. **Close the app and put the phone down.** This is the half that matters: the
+   download has to continue without it.
+5. Open the app again. The files are verified and put away at this point, not
+   before — only the app can write to the photo library.
+6. Check both, by hand:
+   - the ZIP in Files › On My iPhone › Geda Transfer › Received, with the name
+     the computer had for it;
+   - the video in Photos, filed under the day it was **shot**, not today.
+7. Verify the ZIP, rather than trusting that it looks right:
+   ```bash
+   shasum -a 256 /path/on/the/computer/archive.zip
+   ```
+   and compare against the phone's copy shared back out through Files.
+
+### Results
+
+| Date | Device | iOS | Link | Receiver | ZIP size | Elapsed | Continued while closed | ZIP in Files | Video in Photos | Capture date kept | Hashes match | Notes |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| _no run recorded yet_ | | | | | | | | | | | | |
+
+A table with only successes in it is not evidence. Record the run where the
+phone was on cellular, or where the app was force-quit at the wrong moment, or
+where the photo library permission had been denied — those are the paths this
+direction actually fails on.

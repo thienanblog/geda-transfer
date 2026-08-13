@@ -409,24 +409,78 @@ confirmed a full-hash match.** No exceptions.
 
 ## 6. Desktop → Mobile
 
-A suspended iOS app cannot be pushed to (AGENTS.md §3.7). The mobile pulls.
+A suspended iOS app cannot be pushed to (AGENTS.md §3.7). The receiver does not
+send; it **offers**, and the mobile collects.
 
-`GET /v1/outbox` — called when the app comes to the foreground.
+### 6.1 `GET /v1/outbox`
+
+Authenticated. Called when the app comes to the foreground. The listing is
+scoped to the authenticated device: a client is never told about, and can never
+fetch, an item queued for another device.
+
 ```json
 { "items": [
-  { "id": "...", "filename": "contract.pdf", "size": 918273,
-    "hash": "...", "kind": "file", "url": "/v1/outbox/<id>" }
+  { "id": "9f1c…", "filename": "contract.pdf", "size": 918273,
+    "sha256": "3b0c…", "kind": "file",
+    "captured_at": "2026-07-04T10:22:31Z",
+    "url": "/v1/outbox/9f1c…" }
 ] }
 ```
 
-The client downloads via a background `URLSession`, which continues after the
-app is suspended. `DELETE /v1/outbox/<id>` acknowledges receipt after the hash
-is verified.
+| Field | Meaning |
+|---|---|
+| `id` | Opaque. What `DELETE` quotes. The client is never told a path on the receiver. |
+| `filename` | The name on the sending machine. **Untrusted on the client**: it has crossed a network and is not a path until it has been sanitised. |
+| `size` | Bytes. |
+| `sha256` | Hex SHA-256 of the whole file. See below. |
+| `kind` | `photo` \| `video` \| `file`. Decides where it may land. |
+| `captured_at` | RFC3339, optional. Becomes the asset's creation date where the platform allows it. |
+| `url` | Path on this receiver, always under `/v1/outbox/`. |
 
-Routing on the client:
-- `kind: photo|video` → Photo Library (default) or the Files container if the
-  Advanced setting is on.
-- `kind: file` → always the Files container.
+**`sha256`, not the BLAKE3 of §5.** This is the only digest in the protocol
+that is recomputed on a phone. iOS computes SHA-256 on the CPU's crypto
+instructions through CryptoKit; BLAKE3 would mean shipping a second hash
+implementation in Swift, which is a correctness risk in exchange for nothing.
+BLAKE3 remains the authority everywhere the receiver is the one hashing.
+See docs/DECISIONS.md.
+
+An item is listed only once it has been hashed. A client that was offered one
+without a digest could not verify it, and verifying is the only thing standing
+between a corrupted download and a photo library.
+
+### 6.2 `GET /v1/outbox/<id>`
+
+Authenticated, and scoped to the authenticated device. Returns the bytes.
+
+- `ETag` is the quoted `sha256`. It is a perfect validator: it changes exactly
+  when the content does.
+- `Range` and `If-Range` are supported, which is what a background
+  `URLSession` resumes an interrupted download with. A client resuming after a
+  change of content receives `200` with the whole of the new file rather than
+  a tail spliced onto bytes it no longer follows.
+- `HEAD` is supported and moves nothing.
+
+The receiver re-checks the file's size and mtime against what it saw when it
+hashed the item. A file edited after queueing is **not** served under a digest
+it no longer matches; the item fails instead (`410`).
+
+### 6.3 `DELETE /v1/outbox/<id>`
+
+Acknowledges receipt. `204` on success, and on an item that was already
+acknowledged — a client whose earlier acknowledgement was lost must not be
+punished for being careful.
+
+**Sent only after the client has recomputed `sha256` and matched it.** A client
+must also record the arrival locally *before* acknowledging: acknowledging
+first lets a crash in between leave the receiver with the item retired and the
+client with no memory of it, which produces a second copy on the next check.
+
+### 6.4 Routing on the client
+
+- `kind: photo|video` → Photo Library by default, or the Files container when
+  the Advanced setting is on.
+- `kind: file` → **always** the Files container. The Photo Library would refuse
+  it, and discovering that at the end of a 2 GB download is the expensive way.
 
 The naming template does not apply to Photo Library saves — iOS does not permit
 setting filenames there.
@@ -444,11 +498,18 @@ Standard HTTP status codes. Body is:
 | Code | `error` | Retryable |
 |---|---|---|
 | 401 | `unauthorized` | no — re-pair |
+| 404 | `not_found` | no |
 | 409 | `pair_conflict` | no |
+| 409 | `not_ready` | yes — the receiver is still hashing a queued file |
+| 410 | `source_gone` | no — the queued file changed or vanished |
 | 413 | `too_large` | no |
 | 460 | `checksum_mismatch` | once |
 | 507 | `insufficient_storage` | no |
 | 503 | `busy` | yes, with backoff |
+
+An outbox item belonging to another device answers `404`, not `403`. The
+difference between "not yours" and "does not exist" is itself information about
+somebody else's files.
 
 ---
 
