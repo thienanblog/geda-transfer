@@ -301,6 +301,34 @@ jobs:
       # the script and is recorded in docs/PERFORMANCE.md.
       - run: ./scripts/verify-p6.sh
 
+  gate-p7:
+    name: phase gate P7
+    # macOS: the gate typechecks the download session against the iOS SDK, and
+    # runs a Go receiver for the protocol half.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: core/go.mod
+          cache-dependency-path: core/go.sum
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      # A 2 GiB file queued, collected, interrupted, resumed by range, and
+      # verified against the digest the receiver published. The half of the
+      # gate that is two places on a phone is recorded in docs/PERFORMANCE.md.
+      #
+      # 512 MiB here rather than the gate's 2 GiB: a hosted runner's disk is
+      # 14 GB and the run writes the file twice. The size only changes how
+      # long the loopback transfer takes -- every code path, including the
+      # interruption and the resume, is the same at either size -- and the
+      # 2 GiB run is what the phase is signed off on locally.
+      - run: ./scripts/verify-p7.sh --size 536870912
+
 
   licence:
     name: licence headers

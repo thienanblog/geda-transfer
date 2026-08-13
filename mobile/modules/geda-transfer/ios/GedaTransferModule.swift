@@ -44,7 +44,8 @@ public class GedaTransferModule: Module {
     Name("GedaTransfer")
 
     Events(
-      "onUploadProgress", "onUploadCreated", "onBackgroundProgress", "onBackgroundFinished")
+      "onUploadProgress", "onUploadCreated", "onBackgroundProgress", "onBackgroundFinished",
+      "onDownloadProgress", "onDownloadFinished")
 
     OnCreate {
       // Progress and completions from the background session, forwarded only
@@ -59,6 +60,18 @@ public class GedaTransferModule: Module {
             ["uploadId": uploadId, "bytesSent": sent, "totalBytes": total])
         case .finished(let job):
           self.sendEvent("onBackgroundFinished", Self.dictionary(from: job))
+        }
+      }
+
+      BackgroundDownloader.shared.onEvent = { [weak self] event in
+        guard let self else { return }
+        switch event {
+        case .progress(let itemId, let received, let total):
+          self.sendEvent(
+            "onDownloadProgress",
+            ["itemId": itemId, "bytesReceived": received, "totalBytes": total])
+        case .finished(let job):
+          self.sendEvent("onDownloadFinished", Self.dictionary(from: job))
         }
       }
     }
@@ -138,8 +151,63 @@ public class GedaTransferModule: Module {
       ActivityAuthorizationInfo().areActivitiesEnabled
     }
 
+    // MARK: Collecting from a receiver
+
+    /// Where files that arrive as documents are kept, visible in the Files
+    /// app. Media goes to the photo library instead, unless the user has
+    /// turned that off (AGENTS.md §3.7).
+    Function("receivedDirectory") { () -> String in
+      DownloadStore.documentsDirectory().path
+    }
+
+    AsyncFunction("startDownloads") { (requests: [DownloadRequestOptions]) -> [String] in
+      await BackgroundDownloader.shared.start(requests.map { $0.asRequest() })
+    }
+
+    /// Hands back to the system anything it stopped working on, resuming from
+    /// its own token rather than from the beginning.
+    AsyncFunction("reconcileDownloads") { () -> [[String: Any]] in
+      await BackgroundDownloader.shared.reconcile()
+      return BackgroundDownloader.shared.snapshot().map(Self.dictionary(from:))
+    }
+
+    AsyncFunction("retryDownloads") { () -> [[String: Any]] in
+      await BackgroundDownloader.shared.retryFailed()
+      return BackgroundDownloader.shared.snapshot().map(Self.dictionary(from:))
+    }
+
+    Function("downloadJobs") { () -> [[String: Any]] in
+      BackgroundDownloader.shared.snapshot().map(Self.dictionary(from:))
+    }
+
+    /// Forgets a download the app has verified, saved, and acknowledged, and
+    /// deletes the copy it was holding.
+    Function("finishDownload") { (itemId: String) in
+      BackgroundDownloader.shared.finish(itemId: itemId)
+    }
+
+    /// Records that a downloaded file could not be used -- a digest that did
+    /// not match, a photo library that refused it. The bytes go with it.
+    Function("failDownload") { (itemId: String, reason: String) in
+      BackgroundDownloader.shared.fail(itemId: itemId, reason: reason)
+    }
+
+    Function("cancelDownloads") {
+      BackgroundDownloader.shared.cancelAll()
+    }
+
+    /// The digest of a file on disk, computed natively.
+    ///
+    /// The bytes must not cross the bridge to be hashed any more than they may
+    /// to be sent (AGENTS.md §3.8): a 2 GB archive read into JavaScript is a
+    /// crash, not a slow path.
+    AsyncFunction("sha256OfFile") { (path: String) -> String in
+      try FileDigest.sha256(path: path)
+    }
+
     OnDestroy {
       BackgroundUploader.shared.onEvent = nil
+      BackgroundDownloader.shared.onEvent = nil
       self.eachClient { $0.invalidate() }
       self.clientsLock.lock()
       self.clients.removeAll()
@@ -347,6 +415,61 @@ public class GedaTransferModule: Module {
     ]
   }
 
+  private static func dictionary(from job: DownloadJob) -> [String: Any] {
+    [
+      "itemId": job.itemId,
+      "receiverId": job.receiverId,
+      "receiverName": job.receiverName,
+      "filename": job.filename,
+      "kind": job.kind,
+      "capturedAt": job.capturedAt,
+      "sha256": job.sha256,
+      "size": job.size,
+      "bytesReceived": min(job.bytesReceived, job.size),
+      // "saved" is never reported from here: a job the app has saved is
+      // forgotten, staged copy and all, rather than kept as a tombstone.
+      "state": job.state.rawValue,
+      "stagedPath": job.stagedPath ?? "",
+      "error": job.error ?? "",
+    ]
+  }
+
+}
+
+/// One file to collect from a receiver.
+///
+/// There is no staging path to supply, unlike an upload: the system writes the
+/// file itself and the app is told where it landed.
+struct DownloadRequestOptions: Record {
+  @Field var itemId: String = ""
+  @Field var receiverId: String = ""
+  @Field var receiverName: String = ""
+  @Field var filename: String = ""
+  @Field var kind: String = "file"
+  @Field var capturedAt: String = ""
+  @Field var baseUrl: String = ""
+  @Field var path: String = ""
+  @Field var pin: String = ""
+  @Field var token: String = ""
+  @Field var sha256: String = ""
+  @Field var size: Int = 0
+
+  func asRequest() -> BackgroundDownloader.Request {
+    BackgroundDownloader.Request(
+      itemId: itemId,
+      receiverId: receiverId,
+      receiverName: receiverName,
+      filename: filename,
+      kind: kind,
+      capturedAt: capturedAt,
+      baseUrl: baseUrl,
+      path: path,
+      pin: pin,
+      token: token,
+      sha256: sha256,
+      size: Int64(size)
+    )
+  }
 }
 
 struct RequestOptions: Record {

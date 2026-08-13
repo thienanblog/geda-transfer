@@ -1,0 +1,222 @@
+// Copyright 2026 Geda
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+import { describe, expect, it } from 'vitest';
+
+import {
+  DEFAULT_INBOX_SETTINGS,
+  awaitingSave,
+  destinationFor,
+  orderForCollection,
+  parseOutbox,
+  safeFileName,
+  summarizeInbox,
+  toCollect,
+  uniqueName,
+  type DownloadJob,
+  type InboxItem,
+} from '../inbox';
+
+const digest = 'a'.repeat(64);
+
+function item(over: Partial<InboxItem> = {}): InboxItem {
+  return {
+    id: 'i1',
+    filename: 'holiday.mov',
+    size: 1000,
+    sha256: digest,
+    kind: 'video',
+    url: '/v1/outbox/i1',
+    ...over,
+  };
+}
+
+function job(over: Partial<DownloadJob> = {}): DownloadJob {
+  return {
+    itemId: 'i1',
+    receiverId: 'mac-1',
+    receiverName: 'Studio Mac',
+    filename: 'archive.zip',
+    kind: 'file',
+    capturedAt: '',
+    sha256: digest,
+    size: 1000,
+    bytesReceived: 0,
+    state: 'pending',
+    stagedPath: '',
+    error: '',
+    ...over,
+  };
+}
+
+describe('where a file lands', () => {
+  it('sends photos and videos to the Photo Library by default', () => {
+    expect(destinationFor(item({ kind: 'photo' }), DEFAULT_INBOX_SETTINGS)).toBe('photos');
+    expect(destinationFor(item({ kind: 'video' }), DEFAULT_INBOX_SETTINGS)).toBe('photos');
+  });
+
+  // AGENTS.md §3.7: the Photo Library would refuse it, and finding that out at
+  // the end of a 2 GB download is the expensive way to learn it.
+  it('always sends anything else to the Files container', () => {
+    expect(destinationFor(item({ kind: 'file' }), DEFAULT_INBOX_SETTINGS)).toBe('files');
+    expect(destinationFor(item({ kind: 'file' }), { saveMediaToFiles: true })).toBe('files');
+  });
+
+  it('honours the advanced setting for media', () => {
+    expect(destinationFor(item({ kind: 'photo' }), { saveMediaToFiles: true })).toBe('files');
+  });
+
+  it('defaults the advanced setting to off, because it is the confusing one', () => {
+    expect(DEFAULT_INBOX_SETTINGS.saveMediaToFiles).toBe(false);
+  });
+});
+
+describe('reading a receiver’s listing', () => {
+  it('takes a well-formed item', () => {
+    const body = JSON.stringify({
+      items: [
+        {
+          id: 'i1',
+          filename: 'contract.pdf',
+          size: 918273,
+          sha256: digest,
+          kind: 'file',
+          captured_at: '2026-07-04T10:22:31Z',
+          url: '/v1/outbox/i1',
+        },
+      ],
+    });
+
+    expect(parseOutbox(body)).toEqual([
+      {
+        id: 'i1',
+        filename: 'contract.pdf',
+        size: 918273,
+        sha256: digest,
+        kind: 'file',
+        capturedAt: '2026-07-04T10:22:31Z',
+        url: '/v1/outbox/i1',
+      },
+    ]);
+  });
+
+  // Nothing is written to a photo library on the strength of a document that
+  // did not say what the bytes should hash to.
+  it('drops an item with no usable digest', () => {
+    for (const sha256 of ['', 'nope', digest.toUpperCase(), 'a'.repeat(63)]) {
+      const body = JSON.stringify({ items: [{ id: 'i1', size: 1, sha256 }] });
+      expect(parseOutbox(body)).toEqual([]);
+    }
+  });
+
+  it('survives a body that is not a listing at all', () => {
+    expect(parseOutbox('')).toEqual([]);
+    expect(parseOutbox('not json')).toEqual([]);
+    expect(parseOutbox('{"items":"nope"}')).toEqual([]);
+    expect(parseOutbox('{"items":[null,3,"x"]}')).toEqual([]);
+  });
+
+  it('treats an unknown kind as an ordinary file', () => {
+    const body = JSON.stringify({ items: [{ id: 'i1', size: 1, sha256: digest, kind: 'audio' }] });
+    expect(parseOutbox(body)[0]?.kind).toBe('file');
+  });
+
+  // The receiver says where its own file is. It does not get to send this
+  // phone anywhere else, however the listing is phrased.
+  it('refuses a url that points somewhere other than the outbox', () => {
+    for (const url of ['https://evil.example/x', '/v1/files/../../etc', '//evil.example/x']) {
+      const body = JSON.stringify({ items: [{ id: 'i1', size: 1, sha256: digest, url }] });
+      expect(parseOutbox(body)[0]?.url).toBe('/v1/outbox/i1');
+    }
+  });
+});
+
+describe('filenames off the network', () => {
+  it('keeps an ordinary name as it is', () => {
+    expect(safeFileName('holiday video.mov')).toBe('holiday video.mov');
+    expect(safeFileName('IMG_4021.HEIC')).toBe('IMG_4021.HEIC');
+  });
+
+  it('refuses to let a name become a path', () => {
+    expect(safeFileName('../../Library/Preferences/x.plist')).toBe('x.plist');
+    expect(safeFileName('/etc/passwd')).toBe('passwd');
+    expect(safeFileName('..\\..\\windows\\system32\\a.dll')).toBe('a.dll');
+    expect(safeFileName('..')).toBe('file');
+    expect(safeFileName('.')).toBe('file');
+    expect(safeFileName('')).toBe('file');
+  });
+
+  it('strips control characters', () => {
+    expect(safeFileName('re\u0000port.pdf')).toBe('report.pdf');
+    expect(safeFileName('two\nlines.txt')).toBe('twolines.txt');
+  });
+
+  it('hides a hidden file rather than writing one', () => {
+    expect(safeFileName('.hidden.txt')).toBe('hidden.txt');
+  });
+
+  it('truncates a long name without losing the extension', () => {
+    const long = `${'x'.repeat(400)}.heic`;
+    const safe = safeFileName(long);
+    expect(safe.length).toBeLessThanOrEqual(120);
+    expect(safe.endsWith('.heic')).toBe(true);
+  });
+
+  it('numbers a name rather than overwriting what is there', () => {
+    const taken = new Set(['a.txt', 'a_1.txt']);
+    expect(uniqueName('a.txt', taken)).toBe('a_2.txt');
+    expect(uniqueName('b.txt', taken)).toBe('b.txt');
+    expect(uniqueName('noext', new Set(['noext']))).toBe('noext_1');
+  });
+});
+
+describe('choosing what to collect', () => {
+  it('skips what this phone has already dealt with', () => {
+    const items = [item({ id: 'i1' }), item({ id: 'i2' })];
+    expect(toCollect(items, new Set(['i1'])).map((i) => i.id)).toEqual(['i2']);
+  });
+
+  it('starts with the largest, so the big one is not left running alone', () => {
+    const items = [item({ id: 's', size: 10 }), item({ id: 'l', size: 900 })];
+    expect(orderForCollection(items).map((i) => i.id)).toEqual(['l', 's']);
+  });
+});
+
+describe('summarising what the system is doing', () => {
+  it('counts a downloaded-but-unsaved file as still outstanding', () => {
+    // Saving needs PhotoKit, which needs the app: until the user opens it,
+    // the work is not finished however complete the download is.
+    const summary = summarizeInbox([job({ state: 'ready', bytesReceived: 1000 })]);
+    expect(summary.running).toBe(true);
+    expect(summary.filesDone).toBe(0);
+    expect(awaitingSave([job({ state: 'ready', stagedPath: '/tmp/a' })])).toHaveLength(1);
+  });
+
+  it('does not count a file with no path as ready to save', () => {
+    expect(awaitingSave([job({ state: 'ready', stagedPath: '' })])).toHaveLength(0);
+  });
+
+  it('reports one message per distinct failure', () => {
+    const summary = summarizeInbox([
+      job({ itemId: 'a', state: 'failed', error: 'gone' }),
+      job({ itemId: 'b', state: 'failed', error: 'gone' }),
+      job({ itemId: 'c', state: 'saved', size: 500 }),
+    ]);
+    expect(summary.errors).toEqual(['archive.zip: gone']);
+    expect(summary.filesFailed).toBe(2);
+    expect(summary.filesDone).toBe(1);
+    expect(summary.bytesReceived).toBe(500);
+    expect(summary.running).toBe(false);
+  });
+});

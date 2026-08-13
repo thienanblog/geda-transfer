@@ -549,3 +549,70 @@ still exits 1 — which is the form to run when claiming the phase is done.
 The tables in `docs/PERFORMANCE.md` remain the record. Nothing here lowers the
 bar for calling P4, P5, or P6 measured; it only stops a machine with no iPhone
 in it from being asked to prove something about an iPhone.
+
+## 2026-08-13 — Sending to a phone is queueing, and the UI says so
+Nothing can push to a suspended iPhone (AGENTS.md §3.7): there is no APNs in
+this product and adding one would mean a server, which is the thing this
+product does not have. So the desktop cannot send. It writes a row into an
+outbox, and the phone collects it the next time somebody opens the app.
+
+Every word of the interface follows from that. `gedad send` prints "queued",
+the device card says "waiting for the phone to open the app", and neither ever
+says "sent" before the phone has acknowledged the file. The alternative — a
+progress bar that completes the moment a file is chosen — is a lie whose cost
+lands hours later, on somebody standing at a computer wondering why the file is
+not on their phone.
+
+## 2026-08-13 — A queued file is a pointer, re-checked before it is served
+Queueing a 2 GB archive must not cost 2 GB of disk and a minute of copying, so
+an outbox row records a path rather than a spool copy. The risk that buys is a
+file that changes between being queued and being collected — and a receiver
+that served it anyway would hand the phone bytes that do not match the digest
+it was told to verify, which the phone would correctly discard after paying for
+all of them.
+
+So the size and mtime seen at hashing time are recorded and re-checked on the
+way out. A file edited or moved in the meantime fails its own item, with a
+sentence the person who queued it can act on, rather than failing the download.
+
+## 2026-08-13 — Desktop → mobile verifies with SHA-256, not BLAKE3
+Everywhere the receiver hashes, it hashes with BLAKE3 (AGENTS.md §3.6). The
+outbox is the one place where the *phone* recomputes a digest, and there the
+trade is different: iOS computes SHA-256 on the CPU's crypto instructions
+through CryptoKit, at a speed a pure-Swift BLAKE3 will not reach, and shipping
+a second hash implementation in Swift is a correctness risk in exchange for
+nothing. A wrong digest here is not a slow transfer; it is either a corrupt
+file saved as though it were fine, or a good file rejected forever.
+
+The digest's job is also narrower than the ledger's. It answers "did these
+bytes survive the network, the disk, and a resumed range request", not "is this
+the same content as something else on this machine". Nothing about dedup,
+delete-after-transfer, or the `files` table changes.
+
+The field is named `sha256` rather than `hash` precisely so that nobody reads
+§5 and §6 as describing the same digest.
+
+## 2026-08-13 — The phone saves before it acknowledges, and records before both
+Three steps, in one order: verify the bytes, save the file and write the row,
+then tell the receiver. Each swap breaks something specific.
+
+Saving before verifying puts corrupt files in somebody's photo library, from
+where they cannot be told apart from good ones.
+
+Acknowledging before writing the row loses a file to a crash in between: the
+receiver has retired the item and the phone has no memory of it. Acknowledging
+*after* the row is written can only fail the other way — the receiver still
+offers an item the phone already has, which the ledger catches. That is why
+`received.unacked_at` exists: a lost acknowledgement is retried on the next
+check rather than turning into a second copy of the same video.
+
+## 2026-08-13 — A finished download is not a finished transfer
+`nsurlsessiond` can write a file into the app container and can go no further:
+adding to the photo library needs PhotoKit and this app's own permission, in a
+process that may have been launched purely to deliver a completion. So a
+completed download is parked, and the app puts it away the next time it runs.
+
+The inbox card counts a parked file as outstanding for that reason, and the
+background kickoff is scheduled while any download exists rather than only
+while one is still moving. Reporting it as done would be reporting the system's
+work, not the user's file.

@@ -333,6 +333,15 @@ func (s *Service) Run(ctx context.Context) error {
 		return nil
 	})
 
+	// Files queued for a phone are hashed here rather than by whoever queued
+	// them, so that dropping a 2 GB archive onto the window does not freeze
+	// it. It sweeps at startup too: a receiver stopped mid-hash comes back to
+	// rows that nothing else would ever wake.
+	g.Go(func() error {
+		s.srv.Outbox().Run(ctx)
+		return nil
+	})
+
 	if responder != nil {
 		g.Go(func() error {
 			if err := responder.Serve(ctx); err != nil {

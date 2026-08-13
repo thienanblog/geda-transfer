@@ -44,6 +44,7 @@ export interface Device {
   revoked: boolean;
   files: number;
   bytes: number;
+  queued: number;
 }
 
 export interface HistoryEntry {
@@ -61,10 +62,13 @@ export interface HistoryEntry {
 
 export type Outcome = "" | "stored" | "skipped" | "failed";
 
+export type Direction = "inbound" | "outbound";
+
 export interface Transfer {
   upload_id: string;
   device_id: string;
   device_name: string;
+  direction: Direction;
   name: string;
   kind: string;
   size: number;
@@ -104,6 +108,27 @@ export interface SettingsView extends Settings {
   default_template: string;
 }
 
+// One file queued for a phone to collect. "queued" is not "sent": this
+// computer cannot push to a suspended iPhone, so the file waits until the
+// phone next asks (docs/PROTOCOL.md 6).
+export interface QueuedFile {
+  id: string;
+  device_id: string;
+  filename: string;
+  size: number;
+  kind: string;
+  state: "pending" | "ready" | "claimed" | "delivered" | "failed";
+  error?: string;
+  queued_at: string;
+  delivered_at?: string;
+}
+
+export interface SendResult {
+  queued: QueuedFile[] | null;
+  // The user closed the picker without choosing anything. Not an error.
+  cancelled: boolean;
+}
+
 export interface ReceiverEvent {
   running: boolean;
   error?: string;
@@ -123,6 +148,10 @@ export interface GoApp {
   ChooseDestination(): Promise<string>;
   OpenDestination(): Promise<void>;
   RevealFile(storedPath: string): Promise<void>;
+  ChooseAndSend(deviceID: string): Promise<SendResult>;
+  Outbox(deviceID: string): Promise<QueuedFile[]>;
+  CancelSend(deviceID: string, id: string): Promise<void>;
+  ClearSent(deviceID: string): Promise<number>;
   FinishOnboarding(): Promise<void>;
 }
 

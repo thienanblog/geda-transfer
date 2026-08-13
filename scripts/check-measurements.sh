@@ -4,9 +4,10 @@
 #
 # Which gate measurements have actually been recorded in docs/PERFORMANCE.md.
 #
-# Three gates end in something only a person holding hardware can produce:
+# Four gates end in something only a person holding hardware can produce:
 # P4's MB/s from a physical iPhone, P5's force-quit run, P6's session with
-# somebody who has never seen the app. None of them can be produced by a
+# somebody who has never seen the app, and P7's look in the two places on a
+# phone where the files are supposed to be. None of them can be produced by a
 # machine, so none of them can be produced by CI.
 #
 # This script reports which of those rows exist. It exits 0 by default, so the
@@ -25,7 +26,7 @@ if [ "${1:-}" = "--strict" ]; then
     shift
 fi
 GATES=("$@")
-[ ${#GATES[@]} -gt 0 ] || GATES=(P4 P5 P6)
+[ ${#GATES[@]} -gt 0 ] || GATES=(P4 P5 P6 P7)
 
 RESULTS=docs/PERFORMANCE.md
 [ -f "$RESULTS" ] || { echo "FAIL: $RESULTS is missing" >&2; exit 1; }

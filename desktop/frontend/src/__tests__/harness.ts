@@ -14,6 +14,8 @@ import type {
   GoApp,
   HistoryEntry,
   PairCode,
+  QueuedFile,
+  SendResult,
   Settings,
   SettingsView,
   Snapshot,
@@ -60,6 +62,34 @@ export const sampleSettings: SettingsView = {
   default_template: "{device}/{yyyy}/{original_name}.{ext}",
 };
 
+export function sampleDevice(over: Partial<Device> = {}): Device {
+  return {
+    id: "phone-1",
+    name: "An's iPhone",
+    platform: "ios",
+    paired_at: new Date(Date.now() - 86_400_000).toISOString(),
+    last_seen_at: new Date(Date.now() - 60_000).toISOString(),
+    revoked: false,
+    files: 12,
+    bytes: 40_000_000,
+    queued: 0,
+    ...over,
+  };
+}
+
+export function queuedFile(over: Partial<QueuedFile> = {}): QueuedFile {
+  return {
+    id: "item-1",
+    device_id: "phone-1",
+    filename: "archive.zip",
+    size: 2_000_000_000,
+    kind: "file",
+    state: "ready",
+    queued_at: new Date().toISOString(),
+    ...over,
+  };
+}
+
 export function emptySnapshot(): Snapshot {
   return {
     active: [],
@@ -95,6 +125,10 @@ export function install(overrides: Partial<GoApp> = {}): Stub {
     ChooseDestination: vi.fn(async () => ""),
     OpenDestination: vi.fn(async () => {}),
     RevealFile: vi.fn(async () => {}),
+    ChooseAndSend: vi.fn(async (): Promise<SendResult> => ({ queued: [], cancelled: true })),
+    Outbox: vi.fn(async (): Promise<QueuedFile[]> => []),
+    CancelSend: vi.fn(async () => {}),
+    ClearSent: vi.fn(async () => 0),
     FinishOnboarding: vi.fn(async () => {}),
     ...overrides,
   };

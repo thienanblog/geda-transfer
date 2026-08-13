@@ -8,9 +8,31 @@ file, a control socket, and a QR code drawn in the terminal.
 gedad run        # serve until stopped (the default)
 gedad pair       # show a pairing QR code for a phone to scan
 gedad devices    # list paired devices
+gedad send       # queue files for a phone to collect
+gedad queue      # what is waiting for a phone
 gedad unpair ID  # revoke a device's token; its files stay
 gedad status     # what the running daemon is doing
 ```
+
+## Sending files to a phone
+
+```
+gedad send -device phone-1 ~/Documents/contract.pdf ~/Videos/holiday.mov
+gedad queue -device phone-1
+gedad queue -device phone-1 -cancel <item-id>
+```
+
+`send` queues; it does not transfer. Nothing can push to a suspended iPhone
+(AGENTS.md §3.7), so the files are hashed and put on offer, and the phone
+collects them the next time somebody opens the app — continuing in the
+background if they put it down. `gedad queue` is where you see whether that has
+happened yet.
+
+The bytes are not copied anywhere. A queued row points at the file where it
+already lives, and the size and mtime seen at queueing time are re-checked
+before it is served: editing or deleting the file afterwards fails that item
+rather than sending something its digest no longer describes. Files on a mount
+that comes and goes are worth copying somewhere stable first.
 
 ## Install
 

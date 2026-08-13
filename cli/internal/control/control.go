@@ -53,6 +53,9 @@ type (
 
 	// Device is one paired device.
 	Device = service.Device
+
+	// QueuedFile is one file waiting for a phone to collect it.
+	QueuedFile = service.QueuedFile
 )
 
 // Backend is the daemon, as the control socket sees it.
@@ -61,6 +64,9 @@ type Backend interface {
 	Pair(ctx context.Context, ttl time.Duration) (Offer, error)
 	Devices(ctx context.Context) ([]Device, error)
 	Unpair(ctx context.Context, deviceID string) error
+	Send(ctx context.Context, deviceID string, paths []string) ([]QueuedFile, error)
+	Outbox(ctx context.Context, deviceID string) ([]QueuedFile, error)
+	CancelSend(ctx context.Context, deviceID, id string) error
 }
 
 // ErrNotRunning reports that no daemon is listening on the socket.
@@ -72,6 +78,22 @@ type pairRequest struct {
 
 type unpairRequest struct {
 	DeviceID string `json:"device_id"`
+}
+
+// sendRequest queues files for a device.
+//
+// The paths are resolved by the daemon, not by the client: `gedad send` may be
+// run from a different working directory, and the daemon is the process that
+// has to be able to read the file weeks later when the phone finally asks for
+// it. The client sends absolute paths and the daemon checks them.
+type sendRequest struct {
+	DeviceID string   `json:"device_id"`
+	Paths    []string `json:"paths"`
+}
+
+type cancelSendRequest struct {
+	DeviceID string `json:"device_id"`
+	ID       string `json:"id"`
 }
 
 type errorBody struct {
@@ -114,6 +136,47 @@ func Handler(b Backend) http.Handler {
 			return
 		}
 		respond(w, struct{}{}, b.Unpair(r.Context(), req.DeviceID))
+	})
+
+	mux.HandleFunc("POST /v1/send", func(w http.ResponseWriter, r *http.Request) {
+		var req sendRequest
+		if !decode(w, r, &req) {
+			return
+		}
+		if req.DeviceID == "" {
+			writeError(w, http.StatusBadRequest, "device_id is required")
+			return
+		}
+		queued, err := b.Send(r.Context(), req.DeviceID, req.Paths)
+		if queued == nil {
+			queued = []QueuedFile{}
+		}
+		respond(w, queued, err)
+	})
+
+	mux.HandleFunc("GET /v1/outbox", func(w http.ResponseWriter, r *http.Request) {
+		deviceID := r.URL.Query().Get("device_id")
+		if deviceID == "" {
+			writeError(w, http.StatusBadRequest, "device_id is required")
+			return
+		}
+		queued, err := b.Outbox(r.Context(), deviceID)
+		if queued == nil {
+			queued = []QueuedFile{}
+		}
+		respond(w, queued, err)
+	})
+
+	mux.HandleFunc("POST /v1/cancel-send", func(w http.ResponseWriter, r *http.Request) {
+		var req cancelSendRequest
+		if !decode(w, r, &req) {
+			return
+		}
+		if req.DeviceID == "" || req.ID == "" {
+			writeError(w, http.StatusBadRequest, "device_id and id are required")
+			return
+		}
+		respond(w, struct{}{}, b.CancelSend(r.Context(), req.DeviceID, req.ID))
 	})
 
 	return mux

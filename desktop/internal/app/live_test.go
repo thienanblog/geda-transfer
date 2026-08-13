@@ -233,3 +233,36 @@ func TestPumpCoalescesAndStopsWhenIdle(t *testing.T) {
 		t.Errorf("202 events produced %d snapshots; they are not being coalesced", got)
 	}
 }
+
+// Both directions land in the same list, so a row has to say which it is: an
+// arrow pointing the wrong way is worse than no arrow at all.
+func TestDirectionIsCarriedThrough(t *testing.T) {
+	l := newLive()
+
+	l.apply(events.Event{
+		Kind: events.KindStarted, At: at(0), UploadID: "outbox:i1",
+		Direction: events.DirectionOutbound,
+		DeviceID:  "d1", DeviceName: "An's iPhone",
+		Name: "archive.zip", AssetKind: "file", Size: 2000, Offset: 500,
+	})
+
+	row := l.snapshot(at(0)).Active[0]
+	if row.Direction != string(events.DirectionOutbound) {
+		t.Errorf("Direction = %q, want outbound", row.Direction)
+	}
+	// A download resuming by range opens where the file actually is.
+	if row.Offset != 500 {
+		t.Errorf("Offset = %d, want 500", row.Offset)
+	}
+}
+
+// Every event published before the outbox existed is an upload. A subscriber
+// must never have to special-case the empty string.
+func TestAnEventWithNoDirectionIsInbound(t *testing.T) {
+	l := newLive()
+	l.apply(events.Event{Kind: events.KindStarted, At: at(0), UploadID: "u1", Size: 10})
+
+	if got := l.snapshot(at(0)).Active[0].Direction; got != string(events.DirectionInbound) {
+		t.Errorf("Direction = %q, want inbound", got)
+	}
+}

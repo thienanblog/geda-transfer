@@ -25,30 +25,9 @@
 // hashing in a later phase; until then this local record covers the case that
 // matters, which is the same phone sending to the same receiver again.
 
-import * as SQLite from 'expo-sqlite';
-
 import type { Asset } from '../core/types';
 import { ledgerKey } from '../core/plan';
-
-let database: SQLite.SQLiteDatabase | undefined;
-
-async function db(): Promise<SQLite.SQLiteDatabase> {
-  if (database) return database;
-
-  database = await SQLite.openDatabaseAsync('geda.db');
-  await database.execAsync(`
-    PRAGMA journal_mode = WAL;
-    CREATE TABLE IF NOT EXISTS sent (
-      receiver_id TEXT NOT NULL,
-      asset_key   TEXT NOT NULL,
-      stored_path TEXT,
-      size        INTEGER NOT NULL,
-      sent_at     INTEGER NOT NULL,
-      PRIMARY KEY (receiver_id, asset_key)
-    );
-  `);
-  return database;
-}
+import { db } from './db';
 
 /** The keys this receiver already holds, for building a plan. */
 export async function sentKeys(receiverId: string): Promise<Set<string>> {

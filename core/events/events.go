@@ -55,13 +55,41 @@ const (
 	KindFailed Kind = "failed"
 )
 
-// Event is one thing that happened to one upload.
+// Direction is which way the bytes are moving.
+type Direction string
+
+const (
+	// DirectionInbound is a device sending a file to this receiver. It is the
+	// zero value's meaning as well as its name: every event published before
+	// the outbox existed is an upload, and a subscriber must not have to
+	// special-case the empty string.
+	DirectionInbound Direction = "inbound"
+
+	// DirectionOutbound is this receiver handing a queued file to a phone
+	// that came to collect it (docs/PROTOCOL.md §6).
+	DirectionOutbound Direction = "outbound"
+)
+
+// Or returns d, treating the zero value as inbound.
+func (d Direction) Or() Direction {
+	if d == "" {
+		return DirectionInbound
+	}
+	return d
+}
+
+// Event is one thing that happened to one transfer of one file.
 //
 // Fields not relevant to the Kind are zero. Every event carries UploadID so a
 // subscriber can key on it without tracking anything else.
 type Event struct {
 	Kind Kind      `json:"kind"`
 	At   time.Time `json:"at"`
+
+	// Direction distinguishes a file arriving from one being collected. It is
+	// carried on every event because a window showing both in one list has to
+	// be able to tell them apart.
+	Direction Direction `json:"direction"`
 
 	// UploadID identifies the upload for its whole life.
 	UploadID string `json:"upload_id"`

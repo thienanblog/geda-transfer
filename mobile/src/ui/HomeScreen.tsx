@@ -18,9 +18,12 @@ import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-nat
 import type { Receiver } from '../core/types';
 import GedaTransfer from '../../modules/geda-transfer';
 import { startBackgroundTransfer } from '../engine/background';
+import { checkInbox, type CheckResult } from '../engine/inbox';
 import { forgetReceiver } from '../data/receivers';
+import { loadInboxSettings, setSaveMediaToFiles } from '../data/settings';
 import { checkAccess, listAssets, requestAccess, type AssetSummary } from '../media/library';
 import { BackgroundCard, useBackgroundTransfers } from './BackgroundCard';
+import { InboxCard, useInbox } from './InboxCard';
 import { Button, Card, Muted, Screen } from './components';
 import { colors, spacing } from './theme';
 
@@ -50,7 +53,15 @@ export function HomeScreen({
   const [loading, setLoading] = useState(false);
   const [handingOver, setHandingOver] = useState(false);
   const [handOver, setHandOver] = useState<string>();
+  const [checking, setChecking] = useState(false);
+  const [checked, setChecked] = useState<string>();
+  const [saveToFiles, setSaveToFiles] = useState(false);
   const background = useBackgroundTransfers();
+  const inbox = useInbox(receivers);
+
+  useEffect(() => {
+    void loadInboxSettings().then((settings) => setSaveToFiles(settings.saveMediaToFiles));
+  }, []);
 
   useEffect(() => {
     void (async () => setAccess(await checkAccess()))();
@@ -92,10 +103,33 @@ export function HomeScreen({
     }
   };
 
+  /**
+   * Asks the selected receiver what it has for this phone.
+   *
+   * The computer cannot push (AGENTS.md §3.7), so this is the moment the whole
+   * direction hangs on: opening the app is what starts a download, and opening
+   * it again is what lets a finished one reach the photo library.
+   */
+  const collect = async () => {
+    if (!receiver) return;
+    setChecking(true);
+    setChecked(undefined);
+    try {
+      const result = await checkInbox(receiver);
+      inbox.refresh();
+      setChecked(describeCheck(result, receiver.name));
+    } catch (error) {
+      setChecked(error instanceof Error ? error.message : String(error));
+    } finally {
+      setChecking(false);
+    }
+  };
+
   return (
     <Screen title="Geda Transfer">
       <ScrollView contentContainerStyle={{ gap: spacing.md, paddingBottom: spacing.xl }}>
         <BackgroundCard summary={background.summary} onCancelled={background.refresh} />
+        <InboxCard summary={inbox.summary} onCancelled={inbox.refresh} />
 
         <Card>
           <Text style={styles.heading}>Receivers</Text>
@@ -155,6 +189,49 @@ export function HomeScreen({
         </Card>
 
         <Card>
+          <Text style={styles.heading}>From a computer</Text>
+          <Muted>
+            A computer cannot wake this phone, so the app asks when you open it. Photos and videos
+            go to your library; everything else goes to Files.
+          </Muted>
+          <Button
+            label={
+              checking
+                ? 'Asking…'
+                : receiver
+                  ? `Check ${receiver.name} for files`
+                  : 'Pair a receiver first'
+            }
+            tone="quiet"
+            disabled={!receiver || checking}
+            onPress={() => void collect()}
+          />
+          {checked ? <Muted>{checked}</Muted> : null}
+
+          {/*
+            Advanced, and off by default: people who have not gone looking for
+            this setting do not know where the Files container is or that what
+            lands there takes up storage (AGENTS.md §3.7).
+          */}
+          <View style={styles.switchRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.rowTitle}>Save photos to Files instead</Text>
+              <Muted>
+                Advanced. Photos and videos arrive in this app's folder rather than your library,
+                keeping the name the computer gave them. Off unless you know you want it.
+              </Muted>
+            </View>
+            <Switch
+              value={saveToFiles}
+              onValueChange={(value) => {
+                setSaveToFiles(value);
+                void setSaveMediaToFiles(value);
+              }}
+            />
+          </View>
+        </Card>
+
+        <Card>
           <View style={styles.switchRow}>
             <View style={{ flex: 1 }}>
               <Text style={styles.rowTitle}>Keep the screen on</Text>
@@ -197,6 +274,24 @@ export function HomeScreen({
       </ScrollView>
     </Screen>
   );
+}
+
+function describeCheck(result: CheckResult, name: string): string {
+  const parts: string[] = [];
+  if (result.saved > 0) parts.push(`${result.saved} put away.`);
+  if (result.started > 0) {
+    parts.push(`${result.started} downloading; you can close the app, then open it again to have`
+      + ' them saved.');
+  }
+  if (parts.length === 0) {
+    parts.push(
+      result.alreadyHere > 0
+        ? `Nothing new — you already have everything ${name} is offering.`
+        : `${name} has nothing for this phone.`,
+    );
+  }
+  if (result.errors.length > 0) parts.push(result.errors[0]!);
+  return parts.join(' ');
 }
 
 function describeHandOver(

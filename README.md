@@ -15,7 +15,10 @@ moves your files directly between devices on your own network.
 
 - **Mobile → Desktop/NAS**: manual transfer, or opt-in automatic backup that
   keeps running when your phone is locked.
-- **Desktop → Mobile**: send photos, videos, or any file to your phone.
+- **Desktop → Mobile**: send photos, videos, or any file to your phone. Your
+  computer cannot wake a sleeping iPhone, so it queues the files and the phone
+  collects them when you open the app — continuing in the background after you
+  put it down. Photos and videos land in your library, everything else in Files.
 - **Originals by default**: HEIC stays HEIC, ProRAW stays DNG, Live Photos stay
   paired. Format conversion happens on your computer, not on your phone.
 - **Works across subnets and over VPN**: discovery is not limited to your local
@@ -63,6 +66,11 @@ settings for where files go and what they are named.
 cd desktop/frontend && npm ci && npm run build
 cd .. && wails build
 ```
+
+"Send files" on a device queues; it does not transfer. That is not a
+limitation of this app — nothing can push to a suspended iPhone — so the
+window says "waiting for the phone" until the phone has actually collected the
+file and said so.
 
 It keeps receiving when its window is closed — a phone cannot wake a sleeping
 computer, so the app has to be running for anything to arrive — and stays

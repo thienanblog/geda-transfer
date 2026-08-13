@@ -27,6 +27,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"text/tabwriter"
@@ -64,6 +65,8 @@ Commands:
   run        Serve until stopped (the default)
   pair       Show a pairing QR code for a phone to scan
   devices    List paired devices
+  send       Queue files for a device to collect
+  queue      Show what is waiting for a device
   unpair     Revoke a device's token
   status     Report what the running daemon is doing
   version    Print the version
@@ -84,6 +87,10 @@ func run(args []string) error {
 		return cmdPair(args)
 	case "devices":
 		return cmdDevices(args)
+	case "send":
+		return cmdSend(args)
+	case "queue":
+		return cmdQueue(args)
 	case "unpair":
 		return cmdUnpair(args)
 	case "status":
@@ -326,7 +333,7 @@ func cmdDevices(args []string) error {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "DEVICE ID\tNAME\tPLATFORM\tFILES\tSIZE\tLAST SEEN\tSTATUS")
+	fmt.Fprintln(w, "DEVICE ID\tNAME\tPLATFORM\tFILES\tSIZE\tQUEUED\tLAST SEEN\tSTATUS")
 	for _, d := range devices {
 		last := "never"
 		if d.LastSeenAt != nil {
@@ -336,10 +343,128 @@ func cmdDevices(args []string) error {
 		if d.Revoked {
 			state = "revoked"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
-			d.ID, d.Name, d.Platform, d.Files, humanBytes(d.Bytes), last, state)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%d\t%s\t%s\n",
+			d.ID, d.Name, d.Platform, d.Files, humanBytes(d.Bytes), d.Queued, last, state)
 	}
 	return w.Flush()
+}
+
+// cmdSend queues files for a phone.
+//
+// Nothing is transferred here, and the wording says so: a suspended iPhone
+// cannot be pushed to (AGENTS.md §3.7), so this puts files on offer and the
+// phone collects them the next time somebody opens the app. Reporting "sent"
+// would be a lie that shows up hours later as a missing file.
+func cmdSend(args []string) error {
+	fs, cf := flagSet("send")
+	device := fs.String("device", "", "device id to send to (required)")
+	asJSON := fs.Bool("json", false, "print as JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *device == "" {
+		return errors.New("usage: gedad send -device <device-id> <file>...")
+	}
+	if fs.NArg() == 0 {
+		return errors.New("no files given")
+	}
+
+	// Resolved here so that a relative path means what the user typed it to
+	// mean, in the shell they typed it in, rather than whatever directory the
+	// daemon happens to have been started from.
+	paths := make([]string, 0, fs.NArg())
+	for _, arg := range fs.Args() {
+		abs, err := filepath.Abs(arg)
+		if err != nil {
+			return fmt.Errorf("%s: %w", arg, err)
+		}
+		paths = append(paths, abs)
+	}
+
+	client, err := connect(cf)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	queued, err := client.Send(ctx, *device, paths)
+	if err != nil {
+		return err
+	}
+	if *asJSON {
+		return printJSON(queued)
+	}
+
+	var total int64
+	for _, q := range queued {
+		total += q.Size
+	}
+	fmt.Printf("%s queued for %s (%s).\n", plural(len(queued), "file"), *device, humanBytes(total))
+	fmt.Println("They will transfer when that device next opens Geda Transfer.")
+	return nil
+}
+
+func cmdQueue(args []string) error {
+	fs, cf := flagSet("queue")
+	device := fs.String("device", "", "device id (required)")
+	cancelID := fs.String("cancel", "", "withdraw one queued file by id")
+	asJSON := fs.Bool("json", false, "print as JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *device == "" {
+		return errors.New("usage: gedad queue -device <device-id>")
+	}
+
+	client, err := connect(cf)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if *cancelID != "" {
+		if err := client.CancelSend(ctx, *device, *cancelID); err != nil {
+			return err
+		}
+		fmt.Printf("%s withdrawn.\n", *cancelID)
+		return nil
+	}
+
+	queued, err := client.Outbox(ctx, *device)
+	if err != nil {
+		return err
+	}
+	if *asJSON {
+		return printJSON(queued)
+	}
+	if len(queued) == 0 {
+		fmt.Printf("Nothing queued for %s.\n", *device)
+		return nil
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\tFILE\tKIND\tSIZE\tSTATE\tQUEUED")
+	for _, q := range queued {
+		state := q.State
+		if q.Error != "" {
+			state += ": " + q.Error
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			q.ID, q.Filename, q.Kind, humanBytes(q.Size), state,
+			q.QueuedAt.Local().Format(time.RFC3339))
+	}
+	return w.Flush()
+}
+
+func plural(n int, noun string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, noun)
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
 }
 
 func cmdUnpair(args []string) error {
