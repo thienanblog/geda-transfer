@@ -163,7 +163,13 @@ export async function resumeInbox(receivers: readonly Receiver[]): Promise<Inbox
   }
 
   const jobs = await GedaTransfer.retryDownloads();
-  return summarizeInbox(jobs);
+  const summary = summarizeInbox(jobs);
+
+  // A save that was deferred rather than failed leaves no failed job behind,
+  // so the reason would otherwise be lost -- and "your photo library is
+  // switched off" is exactly what the person looking at the card needs to
+  // read.
+  return { ...summary, errors: [...errors, ...summary.errors].slice(0, 20) };
 }
 
 export function inboxSnapshot(): InboxSummary {
@@ -182,16 +188,20 @@ export function cancelInbox(): void {
  * stale progress bar and nothing else.
  */
 export function watchInbox(
-  receivers: readonly Receiver[],
+  receivers: () => readonly Receiver[],
   onChange: (summary: InboxSummary) => void,
 ): () => void {
+  // A function rather than an array: the receivers are loaded from the
+  // keychain after the first render, so a list captured when the listeners
+  // were registered is the empty one, and a download finishing while the app
+  // is open would be reconciled against nobody and never put away.
   const subscriptions = [
     GedaTransfer.addListener('onDownloadProgress', () => onChange(inboxSnapshot())),
     GedaTransfer.addListener('onDownloadFinished', () => {
       // A finished download is a file on disk that nobody has verified yet,
       // and the app is alive right now, which is the only time that can
       // happen.
-      void resumeInbox(receivers)
+      void resumeInbox(receivers())
         .then(onChange)
         .catch(() => onChange(inboxSnapshot()));
     }),
@@ -205,34 +215,73 @@ export function watchInbox(
 // MARK: - verifying and saving
 
 /**
+ * The bytes are fine; this phone could not put them away yet.
+ *
+ * A denied photo-library permission and a full disk are both this. The
+ * download is left where it is and tried again the next time the app opens,
+ * because throwing it away would mean downloading gigabytes again to fail at
+ * the same permission prompt.
+ */
+class DeferredSave extends Error {}
+
+/**
+ * Only one save runs at a time, across every caller.
+ *
+ * Two downloads finishing a second apart produce two `onDownloadFinished`
+ * events, and a "Check" press can arrive on top of either. Without this, both
+ * read the job list before either has called `finishDownload`, and the same
+ * video is added to the photo library twice -- which is precisely the failure
+ * the received ledger exists to prevent, arriving through a door the ledger
+ * cannot see.
+ */
+let saving: Promise<unknown> = Promise.resolve();
+
+function serialised<T>(work: () => Promise<T>): Promise<T> {
+  const next = saving.then(work, work);
+  // Swallowed here only so that one failure does not poison the chain; the
+  // caller still sees its own rejection through `next`.
+  saving = next.then(
+    () => undefined,
+    () => undefined,
+  );
+  return next;
+}
+
+/**
  * Verifies and saves everything the system has finished downloading.
  *
  * Returns how many files were saved. Errors are collected rather than thrown:
  * one file the photo library refuses must not stop the other nine.
  */
-async function saveArrivals(receiver: Receiver, errors: string[]): Promise<number> {
-  const jobs = awaitingSave(GedaTransfer.downloadJobs()).filter(
-    (job) => job.receiverId === receiver.deviceId,
-  );
-  if (jobs.length === 0) return 0;
+function saveArrivals(receiver: Receiver, errors: string[]): Promise<number> {
+  return serialised(async () => {
+    const jobs = awaitingSave(GedaTransfer.downloadJobs()).filter(
+      (job) => job.receiverId === receiver.deviceId,
+    );
+    if (jobs.length === 0) return 0;
 
-  const settings = await settingsOrDefault();
-  let saved = 0;
+    const settings = await settingsOrDefault();
+    let saved = 0;
 
-  for (const job of jobs) {
-    try {
-      await save(job, settings);
-      saved += 1;
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      // The bytes go with the failure: a file whose digest did not match is
-      // not something to keep, and certainly not something to save.
-      GedaTransfer.failDownload(job.itemId, reason);
-      note(errors, `${job.filename}: ${reason}`);
+    for (const job of jobs) {
+      try {
+        await save(job, settings);
+        saved += 1;
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        note(errors, `${job.filename}: ${reason}`);
+
+        // Only bytes that are wrong are thrown away. Everything else keeps
+        // the download and retries the save, which costs a permission prompt
+        // rather than a second gigabyte.
+        if (!(error instanceof DeferredSave)) {
+          GedaTransfer.failDownload(job.itemId, reason);
+        }
+      }
     }
-  }
 
-  return saved;
+    return saved;
+  });
 }
 
 async function save(job: DownloadJob, settings: InboxSettings): Promise<void> {
@@ -254,20 +303,31 @@ async function save(job: DownloadJob, settings: InboxSettings): Promise<void> {
   }
 
   const destination = destinationFor(item, settings);
-  if (destination === 'photos') {
-    await saveToPhotos(job);
-  } else {
-    await saveToFiles(job);
+  try {
+    if (destination === 'photos') {
+      await saveToPhotos(job);
+    } else {
+      await saveToFiles(job);
+    }
+  } catch (error) {
+    // The bytes reached the phone intact; something about this phone stopped
+    // them being filed. Keep them and try again on the next open.
+    throw new DeferredSave(error instanceof Error ? error.message : String(error));
   }
 
   // Written before the receiver is told -- and the receiver is told later,
   // over a connection this function does not need. A crash in between leaves
   // a phone that knows it has the file rather than one that collects it
   // twice, which is the failure worth designing against.
-  await recordReceived(job.receiverId, item, destination);
-
-  // Only now: the staged copy is what a retry would have used.
-  GedaTransfer.finishDownload(job.itemId);
+  try {
+    await recordReceived(job.receiverId, item, destination);
+  } finally {
+    // In the `finally` because the file is in the library either way, and a
+    // retry from the staged copy would put it there a second time. A ledger
+    // this phone cannot write to is a broken database, and the item staying
+    // on offer is then the lesser of the two problems it causes.
+    GedaTransfer.finishDownload(job.itemId);
+  }
 }
 
 /**
@@ -279,7 +339,7 @@ async function save(job: DownloadJob, settings: InboxSettings): Promise<void> {
  */
 async function saveToPhotos(job: DownloadJob): Promise<void> {
   if (!(await canWriteToLibrary())) {
-    throw new Error(
+    throw new DeferredSave(
       'this app cannot add to your photo library. Allow it in Settings, or turn on "Save to Files instead".',
     );
   }

@@ -56,7 +56,7 @@ export function useInbox(receivers: readonly Receiver[]): {
 
   useEffect(() => {
     refresh();
-    const unwatch = watchInbox(current.current, setSummary);
+    const unwatch = watchInbox(() => current.current, setSummary);
     const subscription = AppState.addEventListener('change', (state) => {
       if (state === 'active') refresh();
     });

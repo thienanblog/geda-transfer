@@ -49,10 +49,13 @@ const photos = {
   writable: true,
 };
 
+const listeners = new Map<string, (payload: unknown) => void>();
+
 vi.mock('../../../modules/geda-transfer', () => ({
   default: {
-    addListener() {
-      return { remove() {} };
+    addListener(name: string, handler: (payload: unknown) => void) {
+      listeners.set(name, handler);
+      return { remove: () => listeners.delete(name) };
     },
     async request(options: { url: string; method?: string }) {
       const method = options.method ?? 'GET';
@@ -196,7 +199,7 @@ vi.mock('../../data/receivers', () => ({
   async rememberAddr() {},
 }));
 
-const { checkInbox, resumeInbox } = await import('../inbox');
+const { checkInbox, resumeInbox, watchInbox } = await import('../inbox');
 
 const digest = 'a'.repeat(64);
 
@@ -358,15 +361,38 @@ describe('putting an arrival away', () => {
     expect(disk.moves[0]?.to).toBe('file:///container/Documents/Received/archive_1.zip');
   });
 
-  it('keeps the file when the photo library refuses it, and says why', async () => {
+  // Throwing the bytes away here would mean downloading gigabytes again only
+  // to fail at the same permission prompt.
+  it('keeps the download when the photo library refuses it, and says why', async () => {
     photos.writable = false;
     native.jobs = [job({ kind: 'photo', stagedPath: '/incoming/i1' })];
     native.digests.set('/incoming/i1', digest);
 
-    await resumeInbox([receiver]);
+    const summary = await resumeInbox([receiver]);
 
     expect(ledger.received.size).toBe(0);
-    expect(native.failed[0]?.reason).toMatch(/photo library|Save to Files/i);
+    expect(native.failed).toEqual([]);
+    expect(native.finished).toEqual([]);
+    expect(native.jobs).toHaveLength(1);
+    expect(summary.errors.join(' ')).toMatch(/photo library|Save to Files/i);
+
+    // And it goes in as soon as the permission is there, with no second
+    // download.
+    photos.writable = true;
+    await resumeInbox([receiver]);
+    expect(photos.created).toEqual(['/incoming/i1']);
+  });
+
+  // Two downloads finishing a second apart is the ordinary case, not the
+  // exotic one, and each finish drives its own save.
+  it('does not save the same download twice when two saves overlap', async () => {
+    native.jobs = [job({ itemId: 'i1', kind: 'video', stagedPath: '/incoming/i1' })];
+    native.digests.set('/incoming/i1', digest);
+
+    await Promise.all([resumeInbox([receiver]), resumeInbox([receiver])]);
+
+    expect(photos.created).toEqual(['/incoming/i1']);
+    expect(native.finished).toEqual(['i1']);
   });
 });
 
@@ -419,5 +445,30 @@ describe('telling the computer it arrived', () => {
     await checkInbox(receiver);
 
     expect(ledger.unacked.has('i1')).toBe(false);
+  });
+});
+
+describe('watching while the app is open', () => {
+  // The receivers are read from the keychain after the first render, so a
+  // list captured when the listeners were registered is the empty one. A
+  // download finishing a moment later would then be reconciled against
+  // nobody and left in the container unsaved.
+  it('reads the receivers as they are now, not as they were at mount', async () => {
+    let receivers: Receiver[] = [];
+    const unwatch = watchInbox(
+      () => receivers,
+      () => {},
+    );
+
+    // ...and only now does the app learn which computers it is paired with.
+    receivers = [receiver];
+    native.jobs = [job({ kind: 'video', stagedPath: '/incoming/i1' })];
+    native.digests.set('/incoming/i1', digest);
+
+    listeners.get('onDownloadFinished')?.(native.jobs[0]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(photos.created).toEqual(['/incoming/i1']);
+    unwatch();
   });
 });

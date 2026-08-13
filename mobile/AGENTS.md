@@ -113,6 +113,14 @@ Native changes are **not** picked up by Fast Refresh; rebuild.
   the container and can go no further: only the app can put it in the photo
   library. Until somebody opens the app, a completed download is a file nobody
   has verified, and that is why the inbox card counts it as outstanding.
+- **Only one save runs at a time.** Two downloads finishing a second apart
+  produce two `onDownloadFinished` events, and a "Check" press can land on top
+  of either. Without the serialisation in `engine/inbox.ts` both read the job
+  list before either calls `finishDownload`, and the same video is added to the
+  photo library twice — through a door the received ledger cannot see.
+- **A save that fails is not a download that failed.** A denied photo-library
+  permission keeps the bytes and retries the save on the next open. Throwing
+  them away would mean downloading gigabytes again to fail at the same prompt.
 - **A filename off the network is not a path.** The receiver is trusted with
   the bytes -- the pin and the digest see to that -- but `../../Library/…` is a
   perfectly ordinary string. Everything goes through `safeFileName` first.

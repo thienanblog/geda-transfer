@@ -419,3 +419,51 @@ func TestClassify(t *testing.T) {
 		}
 	}
 }
+
+// A file that is gone is a dead item; a file that could not be opened for some
+// other reason is very likely to open next time, and failing it would need a
+// person to notice and queue it again.
+func TestATransientOpenFailureDoesNotKillTheItem(t *testing.T) {
+	q, _, dir := newQueue(t)
+	path := write(t, dir, "locked.zip", 256)
+
+	queued, err := q.Add(t.Context(), phone, []string{path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.HashPending(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Unreadable, but present. Root can read it anyway, so the assertion only
+	// holds where the test is not running as root.
+	if os.Geteuid() == 0 {
+		t.Skip("running as root; permissions do not apply")
+	}
+	if err := os.Chmod(path, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+
+	if _, _, err := q.Open(t.Context(), phone, queued[0].ID); err == nil {
+		t.Fatal("an unreadable file opened")
+	}
+
+	item, err := q.Item(t.Context(), phone, queued[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.State != outbox.StateReady {
+		t.Errorf("state is %q after a transient open failure, want ready", item.State)
+	}
+
+	// Once it is readable again, it serves without anybody re-queueing it.
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, _, err := q.Open(t.Context(), phone, queued[0].ID)
+	if err != nil {
+		t.Fatalf("the item did not recover: %v", err)
+	}
+	f.Close()
+}

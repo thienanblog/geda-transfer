@@ -90,8 +90,16 @@ func (q *Queue) Open(ctx context.Context, deviceID, id string) (*os.File, Item, 
 
 	f, err := os.Open(item.SourcePath)
 	if err != nil {
-		_ = q.fail(ctx, item.ID, describeMissing(err))
-		return nil, item, fmt.Errorf("%w: %s", ErrSourceChanged, describeMissing(err))
+		// Only a file that is *gone* is a dead item. Everything else -- a
+		// network volume that is briefly away, a process at its open-file
+		// limit while several phones collect at once -- is very likely to
+		// work on the next attempt, and failing the item for it would need a
+		// person to notice and queue the file again.
+		if errors.Is(err, os.ErrNotExist) {
+			_ = q.fail(ctx, item.ID, describeMissing(err))
+			return nil, item, fmt.Errorf("%w: %s", ErrSourceChanged, describeMissing(err))
+		}
+		return nil, item, fmt.Errorf("outbox: open %s: %w", item.SourcePath, err)
 	}
 
 	info, err := f.Stat()
