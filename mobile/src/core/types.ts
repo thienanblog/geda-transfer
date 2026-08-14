@@ -59,6 +59,19 @@ export type Asset = {
   resourceType?: ResourceType;
 
   /**
+   * Photographic resources of this asset that were NOT sent.
+   *
+   * Only delete-after-transfer reads it, and it is the difference between
+   * deleting a photograph and deleting a copy of one: an asset whose negative
+   * or whose untouched capture stayed behind must not be removed from the
+   * phone, however firmly the receiver vouches for what it did get.
+   *
+   * Undefined means the question was never asked, and blocks deletion exactly
+   * as a non-empty list does.
+   */
+  withheld?: ResourceType[];
+
+  /**
    * True when `filePath` is a copy this app made and owns.
    *
    * A resource with no file URL behind it -- a Live Photo's video, a raw

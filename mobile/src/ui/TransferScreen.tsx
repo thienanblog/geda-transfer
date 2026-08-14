@@ -19,6 +19,8 @@ import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { formatBytes, formatDuration, formatRate } from '../core/throughput';
 import type { TransferItem } from '../core/types';
 import { Transfer, type TransferSnapshot } from '../engine/uploader';
+import { describeKept } from '../core/deletion';
+import { reclaim, type ReclaimOutcome } from '../engine/deletion';
 import type { SendRequest } from './HomeScreen';
 import { Button, Card, Muted, ProgressBar, Screen, Stat } from './components';
 import { colors, spacing } from './theme';
@@ -34,12 +36,14 @@ export function TransferScreen({
 }) {
   const [snapshot, setSnapshot] = useState<TransferSnapshot>();
   const [fatal, setFatal] = useState<string>();
+  const [reclaimed, setReclaimed] = useState<ReclaimOutcome>();
   const transfer = useRef<Transfer>(undefined);
 
   useEffect(() => {
     const run = new Transfer({
       receiver: request.receiver,
       send: request.send,
+      deleteAfterTransfer: request.deleteAfterTransfer,
       onChange: setSnapshot,
     });
     transfer.current = run;
@@ -52,6 +56,27 @@ export function TransferScreen({
 
     void run
       .run(request.summaries)
+      .then(async (result) => {
+        // Only after the transfer has finished, and only for a run that was
+        // not cancelled: a user who stopped a transfer half way did not ask
+        // to be shown a delete prompt for the half that got through.
+        if (result.phase !== 'done') return;
+        try {
+          setReclaimed(await reclaim(request.receiver));
+        } catch (error) {
+          // Caught here rather than left to the shared handler below. The
+          // files are on the computer; only the optional step after them
+          // failed, and reporting that as a failed transfer would tell
+          // somebody their photos did not arrive when they did.
+          setReclaimed({
+            off: false,
+            offered: 0,
+            deleted: 0,
+            kept: [],
+            errors: [error instanceof Error ? error.message : String(error)],
+          });
+        }
+      })
       .catch((error: unknown) =>
         setFatal(error instanceof Error ? error.message : String(error)),
       )
@@ -107,6 +132,29 @@ export function TransferScreen({
       {fatal ? (
         <Card>
           <Text style={styles.error}>{fatal}</Text>
+        </Card>
+      ) : null}
+
+      {reclaimed && !reclaimed.off ? (
+        <Card>
+          <Text style={styles.heading}>Deleted from this phone</Text>
+          <Muted>
+            {reclaimed.deleted > 0
+              ? `${reclaimed.deleted} ${reclaimed.deleted === 1 ? 'item is' : 'items are'} in Recently Deleted, where iOS keeps them for 30 days.`
+              : 'Nothing was deleted.'}
+          </Muted>
+          {/*
+            Never a silent nothing. Somebody who turned this on and got fewer
+            deletions than they expected is entitled to know which files were
+            kept and why, in the same place they are told about the ones that
+            went.
+          */}
+          {reclaimed.kept.length > 0 ? <Muted>{describeKept(reclaimed.kept)}</Muted> : null}
+          {reclaimed.errors.map((error) => (
+            <Text key={error} style={styles.errorLine}>
+              {error}
+            </Text>
+          ))}
         </Card>
       ) : null}
 

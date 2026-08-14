@@ -38,6 +38,26 @@ export async function sentKeys(receiverId: string): Promise<Set<string>> {
   return new Set(rows.map((row) => row.asset_key));
 }
 
+/**
+ * Where this receiver put each file it already has, by ledger key.
+ *
+ * Only delete-after-transfer asks for this: an asset skipped because it went
+ * on an earlier run is still on the phone, and the user who has just turned
+ * the setting on means it too.
+ */
+export async function sentPaths(receiverId: string): Promise<Map<string, string>> {
+  const rows = await (await db()).getAllAsync<{ asset_key: string; stored_path: string | null }>(
+    'SELECT asset_key, stored_path FROM sent WHERE receiver_id = ?',
+    receiverId,
+  );
+
+  const out = new Map<string, string>();
+  for (const row of rows) {
+    if (row.stored_path) out.set(row.asset_key, row.stored_path);
+  }
+  return out;
+}
+
 export async function recordSent(
   receiverId: string,
   asset: Asset,

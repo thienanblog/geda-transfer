@@ -274,6 +274,58 @@ export function chooseResources(
   }));
 }
 
+/**
+ * The photographic resources of an asset that `chooseResources` did not pick,
+ * or `undefined` when that cannot be established.
+ *
+ * The counterpart question to `chooseResources`, and it exists for one caller:
+ * delete-after-transfer. Sending the rendered version of an edited photo and
+ * then deleting the asset destroys the untouched capture, which was never on
+ * the receiver and cannot be got back. Sending the JPEG of a ProRAW shot and
+ * deleting the asset destroys the negative.
+ *
+ * So a phone may only delete an asset it sent *all* of, and this is how it
+ * knows. An edit recipe does not count -- it is not a photograph, and it is
+ * deliberately never sent (docs/PROTOCOL.md §5.1).
+ *
+ * An empty resource list answers `undefined` rather than "nothing withheld".
+ * `PHAssetResource` returns one for an asset whose resources are not
+ * available, without failing, and reading that as "fully accounted for" would
+ * let the asset be deleted after sending whatever `getUri` happened to
+ * return. Undefined blocks the deletion (src/core/deletion.ts), which is the
+ * only safe reading of "we could not find out".
+ */
+export function withheldResources(
+  resources: Resource[],
+  chosen: Chosen[],
+): ResourceType[] | undefined {
+  if (resources.length === 0) return undefined;
+
+  // Counted rather than set-tested. `chooseResources` keeps only the first
+  // resource of each type, so an asset listing two of a type sends one and
+  // leaves one behind -- and a membership test on the type would call that
+  // "nothing withheld" and let the asset be deleted.
+  const sentPerType = new Map<ResourceType, number>();
+  for (const c of chosen) sentPerType.set(c.type, (sentPerType.get(c.type) ?? 0) + 1);
+
+  const seenPerType = new Map<ResourceType, number>();
+  const withheld: ResourceType[] = [];
+
+  for (const resource of resources) {
+    if (isSidecarData(resource.type)) continue;
+
+    const index = seenPerType.get(resource.type) ?? 0;
+    seenPerType.set(resource.type, index + 1);
+
+    // The nth resource of a type is covered only if at least n of that type
+    // were actually sent.
+    if (index < (sentPerType.get(resource.type) ?? 0)) continue;
+    if (withheld.includes(resource.type)) continue;
+    withheld.push(resource.type);
+  }
+  return withheld;
+}
+
 // addVersions applies the edited/original choice to one pair of resources.
 function addVersions(
   add: (r: Resource | undefined) => void,

@@ -13,7 +13,7 @@
 // limitations under the License.
 
 import { useEffect, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 
 import {
   DEFAULT_SEND_OPTIONS,
@@ -26,10 +26,13 @@ import GedaTransfer from '../../modules/geda-transfer';
 import { startBackgroundTransfer } from '../engine/background';
 import { checkInbox, type CheckResult } from '../engine/inbox';
 import { forgetReceiver } from '../data/receivers';
+import { cancelReclaim } from '../engine/deletion';
 import {
   loadInboxSettings,
+  loadDeleteAfterTransfer,
   loadSendOptions,
   setSaveMediaToFiles,
+  setDeleteAfterTransfer,
   setSendOptions,
 } from '../data/settings';
 import { checkAccess, listAssets, requestAccess, type AssetSummary } from '../media/library';
@@ -43,6 +46,8 @@ export type SendRequest = {
   summaries: AssetSummary[];
   keepAwake: boolean;
   send: SendOptions;
+  /** Delete each asset from this phone once the computer has vouched for it. */
+  deleteAfterTransfer: boolean;
 };
 
 export function HomeScreen({
@@ -69,12 +74,14 @@ export function HomeScreen({
   const [checked, setChecked] = useState<string>();
   const [saveToFiles, setSaveToFiles] = useState(false);
   const [send, setSend] = useState<SendOptions>(DEFAULT_SEND_OPTIONS);
+  const [deleteAfter, setDeleteAfter] = useState(false);
   const background = useBackgroundTransfers();
   const inbox = useInbox(receivers);
 
   useEffect(() => {
     void loadInboxSettings().then((settings) => setSaveToFiles(settings.saveMediaToFiles));
     void loadSendOptions().then(setSend);
+    void loadDeleteAfterTransfer().then(setDeleteAfter);
   }, []);
 
   useEffect(() => {
@@ -104,6 +111,39 @@ export function HomeScreen({
     const merged = { ...send, ...next };
     setSend(merged);
     void setSendOptions(merged);
+  };
+
+  /**
+   * Turning deletion on is the one choice in this app that can cost a
+   * photograph, so it is confirmed rather than toggled. Turning it off needs
+   * no confirmation: nobody has to be talked out of keeping their photos.
+   */
+  const changeDeleteAfter = (value: boolean): void => {
+    if (!value) {
+      setDeleteAfter(false);
+      void setDeleteAfterTransfer(false);
+      return;
+    }
+
+    Alert.alert(
+      'Delete photos from this phone?',
+      'After a transfer, this app will ask the computer to prove it still holds each file, ' +
+        'then delete the ones it proved from this phone. Deleted photos go to Recently Deleted, ' +
+        'where iOS keeps them for 30 days.\n\n' +
+        'Anything the computer cannot vouch for is kept. So is any photo only partly sent — ' +
+        'a ProRAW shot whose negative stayed behind, or an edited photo sent without its original.',
+      [
+        { text: 'Keep my photos', style: 'cancel' },
+        {
+          text: 'Delete after transfer',
+          style: 'destructive',
+          onPress: () => {
+            setDeleteAfter(true);
+            void setDeleteAfterTransfer(true);
+          },
+        },
+      ],
+    );
   };
 
   const receiver = receivers.find((entry) => entry.deviceId === selected) ?? receivers[0];
@@ -184,7 +224,15 @@ export function HomeScreen({
                 </View>
                 <Pressable
                   accessibilityRole="button"
-                  onPress={() => void forgetReceiver(entry.deviceId).then(onReceiversChanged)}
+                  onPress={() =>
+                    // The pending deletions go with it. They can only ever be
+                    // settled by the receiver that was just forgotten, and a
+                    // row nobody can confirm is a row that would sit there
+                    // for good.
+                    void cancelReclaim(entry.deviceId)
+                      .then(() => forgetReceiver(entry.deviceId))
+                      .then(onReceiversChanged)
+                  }
                 >
                   <Text style={styles.forget}>Forget</Text>
                 </Pressable>
@@ -350,6 +398,32 @@ export function HomeScreen({
           </View>
         </Card>
 
+        {/*
+          Its own card, below everything else, and the only red text on the
+          screen. This is the one setting here that can cost a photograph, and
+          it should not read like a sibling of "keep the screen on"
+          (AGENTS.md §4).
+        */}
+        <Card>
+          <Text style={styles.heading}>Advanced</Text>
+          <View style={styles.switchRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.rowTitle}>Delete from this phone after sending</Text>
+              <Text style={styles.warning}>
+                Off. Turn this on and photos are removed from this phone once the computer has
+                proved it holds them — byte for byte, checked at the moment of deleting, not when
+                they were sent.
+              </Text>
+              <Muted>
+                They go to Recently Deleted, where iOS keeps them for 30 days. Anything the
+                computer cannot vouch for stays, and so does any photo only part of which was
+                sent.
+              </Muted>
+            </View>
+            <Switch value={deleteAfter} onValueChange={changeDeleteAfter} />
+          </View>
+        </Card>
+
         <Card>
           <View style={styles.switchRow}>
             <View style={{ flex: 1 }}>
@@ -367,7 +441,14 @@ export function HomeScreen({
           label={receiver ? `Send to ${receiver.name}` : 'Pair a receiver first'}
           disabled={!receiver || selection.send.length === 0}
           onPress={() =>
-            receiver && onSend({ receiver, summaries: selection.send, keepAwake, send })
+            receiver &&
+            onSend({
+              receiver,
+              summaries: selection.send,
+              keepAwake,
+              send,
+              deleteAfterTransfer: deleteAfter,
+            })
           }
         />
 
@@ -450,6 +531,7 @@ const styles = StyleSheet.create({
   rowTitle: { color: colors.text, fontSize: 16, fontWeight: '500' },
   rowSubtitle: { color: colors.muted, fontSize: 12 },
   forget: { color: colors.bad, fontSize: 13 },
+  warning: { color: colors.warn, fontSize: 12, lineHeight: 17 },
   count: { color: colors.text, fontSize: 22, fontWeight: '600' },
   switchRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
 });

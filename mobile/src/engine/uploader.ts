@@ -27,19 +27,20 @@ import GedaTransfer, {
   type UploadCreatedEvent,
   type UploadProgressEvent,
 } from '../../modules/geda-transfer';
-import { uploadMetadata, buildPlan } from '../core/plan';
+import { uploadMetadata, buildPlan, ledgerKey } from '../core/plan';
 import { mapPool } from '../core/pool';
 import { DEFAULT_SEND_OPTIONS, type SendOptions } from '../core/selection';
 import { WorkQueue, isAbort } from '../core/queue';
 import { ThroughputMeter } from '../core/throughput';
 import type { Asset, Receiver, TransferItem } from '../core/types';
-import { recordSent, sentKeys } from '../data/ledger';
+import { recordSent, sentKeys, sentPaths } from '../data/ledger';
 import {
   AssetUnavailableError,
   release,
   resolveAsset,
   type AssetSummary,
 } from '../media/library';
+import { alreadyNoted, noteSent } from './deletion';
 import { connect } from './session';
 
 /**
@@ -79,6 +80,15 @@ export type TransferOptions = {
   concurrency?: number;
   /** Which parts of each asset to send. Defaults to sending the most. */
   send?: SendOptions;
+  /**
+   * Whether to record what was sent as a candidate for deletion.
+   *
+   * Recording is not deleting: it hashes the file while the phone still has
+   * it, so the receiver can be asked to reproduce that digest afterwards.
+   * Nothing goes until it does, and `reclaim` checks the setting again before
+   * anything is destroyed (src/engine/deletion.ts).
+   */
+  deleteAfterTransfer?: boolean;
   onChange: (snapshot: TransferSnapshot) => void;
 };
 
@@ -86,6 +96,7 @@ export class Transfer {
   private readonly receiver: Receiver;
   private readonly concurrency: number;
   private readonly sendOptions: SendOptions;
+  private readonly deleteAfterTransfer: boolean;
   private readonly onChange: (snapshot: TransferSnapshot) => void;
 
   private items: TransferItem[] = [];
@@ -93,6 +104,9 @@ export class Transfer {
   private queue?: WorkQueue<TransferItem>;
   private meter = new ThroughputMeter();
   private subscriptions: { remove: () => void }[] = [];
+
+  /** Sent files waiting to be hashed for delete-after-transfer. */
+  private readonly toNote: { asset: Asset; storedPath: string }[] = [];
 
   private phase: TransferPhase = 'idle';
   private baseUrl = '';
@@ -106,6 +120,7 @@ export class Transfer {
     this.receiver = options.receiver;
     this.concurrency = Math.min(Math.max(options.concurrency ?? DEFAULT_CONCURRENCY, 1), 8);
     this.sendOptions = options.send ?? DEFAULT_SEND_OPTIONS;
+    this.deleteAfterTransfer = options.deleteAfterTransfer ?? false;
     this.onChange = options.onChange;
   }
 
@@ -130,7 +145,17 @@ export class Transfer {
       this.items = plan.items.map((asset) => ({ asset, state: 'queued', bytesSent: 0 }));
       this.emit();
 
+      // Assets that went on an earlier run are still on this phone, and a
+      // person who has just turned delete-after-transfer on means them too.
+      // Done before the transfer, while their staged copies still exist.
+      await this.noteAlreadySent(plan.skipped);
+
       await this.transfer();
+
+      // Before the `finally` below releases the staged copies, which is the
+      // last moment a Live Photo's video can be hashed.
+      await this.noteTransferred();
+
       return this.snapshot();
     } finally {
       // `resolved` and not `this.items`: an asset the receiver already had
@@ -251,6 +276,57 @@ export class Transfer {
     this.emit();
   }
 
+  /**
+   * Records assets this receiver already had as deletion candidates.
+   *
+   * Only the ones not already recorded: hashing a library that is waiting on
+   * a confirmation would re-read every file on every run, for an answer that
+   * has not changed.
+   */
+  private async noteAlreadySent(skipped: Asset[]): Promise<void> {
+    if (!this.deleteAfterTransfer || skipped.length === 0) return;
+
+    try {
+      const [paths, noted] = await Promise.all([
+        sentPaths(this.receiver.deviceId),
+        alreadyNoted(this.receiver),
+      ]);
+
+      for (const asset of skipped) {
+        const key = ledgerKey(asset);
+        if (noted.has(key)) continue;
+
+        const storedPath = paths.get(key);
+        if (!storedPath) continue;
+
+        await noteSent(this.receiver, asset, storedPath);
+      }
+    } catch (error) {
+      // An asset that does not become a candidate is an asset that does not
+      // get deleted, which is not worth failing a transfer over.
+      this.note(error, 'earlier transfers');
+    }
+  }
+
+  /**
+   * Hashes what was sent, for delete-after-transfer.
+   *
+   * Off the upload queue and after it, so the transfer runs at full width;
+   * pooled, because this is several full file reads and doing them one at a
+   * time on a library would take longer than the transfer did.
+   */
+  private async noteTransferred(): Promise<void> {
+    if (this.toNote.length === 0) return;
+
+    await mapPool(this.toNote, (entry) => noteSent(this.receiver, entry.asset, entry.storedPath), {
+      // `noteSent` swallows its own failures -- an asset that does not become
+      // a candidate is an asset that does not get deleted -- so nothing here
+      // can fail the transfer.
+      onError: () => {},
+    });
+    this.toNote.length = 0;
+  }
+
   private async send(item: TransferItem, signal: AbortSignal): Promise<void> {
     if (item.state === 'done' || item.state === 'skipped') return;
 
@@ -285,6 +361,14 @@ export class Transfer {
       item.state = result.deduplicated ? 'skipped' : 'done';
 
       await recordSent(this.receiver.deviceId, item.asset, result.storedPath);
+      if (this.deleteAfterTransfer) {
+        // Queued rather than hashed here. Hashing is a full local read of the
+        // file, and doing it inline would hold one of the six to eight upload
+        // slots while no bytes moved -- which is exactly the concurrency that
+        // saturates the link (AGENTS.md §3.2, §5). It happens after the
+        // transfer instead, while the staged copies are still on disk.
+        this.toNote.push({ asset: item.asset, storedPath: result.storedPath });
+      }
     } catch (error) {
       if (signal.aborted || isAbort(error)) {
         // A pause or a cancel is not a failure, and showing it in red would

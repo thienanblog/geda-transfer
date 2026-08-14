@@ -174,6 +174,10 @@ func New(cfg Config) (*Server, error) {
 	// code -- because a device that has no token yet is the entire point.
 	s.mux.HandleFunc("POST /v1/pair", s.handlePair)
 	s.mux.Handle("POST /v1/have", s.authenticated(http.HandlerFunc(s.handleHave)))
+
+	// Proof that a file is still here, which is the only thing that may
+	// authorise a phone to delete its own copy (docs/PROTOCOL.md §5.4).
+	s.mux.Handle("POST /v1/confirm", s.authenticated(http.HandlerFunc(s.handleConfirm)))
 	uploads := s.authenticated(http.StripPrefix(strings.TrimSuffix(UploadPath, "/"), handler))
 	s.mux.Handle(UploadPath, uploads)
 

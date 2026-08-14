@@ -428,18 +428,104 @@ The final `PATCH` response carries:
 
 `hash` in `Upload-Metadata` is optional. When absent the receiver still computes
 the digest and records it, but has nothing to verify against -- so a client that
-intends to delete its local copy **must** send it.
-
-**A file is only eligible for delete-after-transfer once the receiver has
-confirmed a full-hash match.** No exceptions.
+cares whether the right bytes arrived **must** send it.
 
 `Geda-Stored-Path` names the file **as received**. A receiver configured to
 convert may later write another file beside it, or — under the space-saving
 preset — replace it. Neither changes what this header said, and neither happens
 before the response is sent: conversion is a queue behind the transfer, not a
-step inside it (docs/DECISIONS.md). A receiver that has removed a received
-original records that it can no longer prove it holds those bytes, and that
-file stops being eligible for delete-after-transfer regardless of its hash.
+step inside it (docs/DECISIONS.md).
+
+**This response does not authorise deleting anything.** It was true when it was
+sent, and a client may act on it days later. Deletion is gated on §5.4 instead.
+
+### 5.4 Proof of custody
+
+`POST /v1/confirm`. Authenticated, and scoped to the authenticated device.
+
+Asks one question: **can you still produce these exact bytes, right now?** It
+exists for delete-after-transfer and nothing else, and it is the only thing in
+this protocol that may authorise a client to destroy its own copy of a file.
+
+```json
+{ "items": [
+  { "id": "<client-local key>",
+    "path": "2026/07/IMG_0042.HEIC",
+    "size": 4194304,
+    "sha256": "<hex SHA-256 of the client's copy>" }
+] }
+```
+
+Response, one result per item, in order:
+
+```json
+{ "results": [ { "id": "...", "confirmed": true, "reason": "" } ] }
+```
+
+| Field | Meaning |
+|---|---|
+| `id` | Echoed back. Opaque to the receiver. |
+| `path` | The `Geda-Stored-Path` the receiver reported for this file. A **lookup key scoped to the device**, never a path the receiver opens. |
+| `size` | What the client believes the file to be. |
+| `sha256` | Hex SHA-256, computed by the client over its own copy. |
+
+**SHA-256, not the BLAKE3 of §5.1.** This is the second digest in the protocol
+a phone has to compute, and for the same reason as the first (§6.1): iOS does
+SHA-256 on the CPU's crypto instructions through CryptoKit, and a second hash
+implementation in Swift would be a correctness risk in the one place that
+cannot afford one. BLAKE3 remains the authority wherever the receiver hashes.
+
+The receiver **must** answer by reading the file. It must not answer from
+`files.hash`, which records what arrived — a statement about the past — and
+which a lost, moved, truncated, or silently corrupted file leaves intact.
+Concretely, for each item:
+
+1. A `files` row exists for `(device_id, stored_path)`. Otherwise `unknown`.
+2. `original_removed_at` is null. Otherwise `original_removed`.
+3. The ledger's size, the client's size, and the file's size all agree.
+4. The file is read in full and its SHA-256 equals the client's.
+
+A confirmation is never cached. Asking twice reads the file twice, because the
+question is about the present and the answer can stop being true between them.
+
+Refusal reasons, which are shown to a person and so must be distinguishable:
+
+| `reason` | Meaning |
+|---|---|
+| `unknown` | No such file belongs to this device. Also the answer for another device's file — the difference between "not yours" and "does not exist" is itself information (§7). |
+| `original_removed` | A space-saving conversion deleted the received original. `files.hash` still truthfully describes bytes this receiver can no longer produce, so it is in no position to authorise deleting anybody else's copy (docs/DECISIONS.md). |
+| `missing` | The ledger has it; the disk does not. |
+| `size_mismatch` | Truncated, appended to, or not the size asked about. |
+| `content_mismatch` | Right length, wrong bytes. |
+| `unreadable` | The file could not be read. |
+| `bad_request` | The item carried no usable digest or path. |
+
+At most **200 items per request** — far below the dedup probe's thousand,
+because every item is a full read. Clients batch.
+
+A refusal is a `200` with `confirmed: false`, not an error status: a client has
+to tell "this one is gone" from "ask again later", and must never treat one as
+the other.
+
+#### What the client must do with this
+
+- **A file is only eligible for deletion once it has been confirmed by this
+  endpoint.** Not by the upload response, and not by the dedup probe of §4 —
+  that answers from size, capture date and a head hash, which is the right
+  trade for skipping an upload and nowhere near enough to destroy a file.
+- **An unanswered item is not a confirmed one.** A dropped connection, a
+  truncated response, and a reply about a different file must all keep the
+  file.
+- **An asset is not a file.** Where one asset was sent as several uploads — a
+  Live Photo, a RAW+JPEG pair — every one of them must be confirmed before the
+  asset may go. Confirming the still and deleting the Live Photo loses the
+  motion.
+- **An asset only part of which was sent must never be deleted**, however
+  firmly the receiver vouches for the part it got. Sending the rendered version
+  of an edited photo and deleting the asset destroys the untouched capture,
+  which was never on the receiver.
+- Deletion goes to the platform's trash (iOS Recently Deleted, 30 days), and
+  is batched into one system confirmation.
 
 ---
 
@@ -473,12 +559,12 @@ fetch, an item queued for another device.
 | `captured_at` | RFC3339, optional. Becomes the asset's creation date where the platform allows it. |
 | `url` | Path on this receiver, always under `/v1/outbox/`. |
 
-**`sha256`, not the BLAKE3 of §5.** This is the only digest in the protocol
-that is recomputed on a phone. iOS computes SHA-256 on the CPU's crypto
-instructions through CryptoKit; BLAKE3 would mean shipping a second hash
-implementation in Swift, which is a correctness risk in exchange for nothing.
-BLAKE3 remains the authority everywhere the receiver is the one hashing.
-See docs/DECISIONS.md.
+**`sha256`, not the BLAKE3 of §5.** SHA-256 is what a phone computes, here and
+in §5.4, and those are the only two places in the protocol where a phone
+hashes anything. iOS computes SHA-256 on the CPU's crypto instructions through
+CryptoKit; BLAKE3 would mean shipping a second hash implementation in Swift,
+which is a correctness risk in exchange for nothing. BLAKE3 remains the
+authority everywhere the receiver is the one hashing. See docs/DECISIONS.md.
 
 An item is listed only once it has been hashed. A client that was offered one
 without a digest could not verify it, and verifying is the only thing standing

@@ -39,8 +39,10 @@ import {
   DEFAULT_SEND_OPTIONS,
   NO_FLAGS,
   chooseResources,
+  withheldResources,
   type AssetFlags,
   type Chosen,
+  type ResourceType,
   type SendOptions,
 } from '../core/selection';
 import type { Asset } from '../core/types';
@@ -211,7 +213,7 @@ export async function resolveAsset(
     );
   }
 
-  const { chosen, flags } = await choose(summary, options);
+  const { chosen, flags, withheld } = await choose(summary, options);
 
   // The resource `getUri` would return is free -- it is a path into the
   // library, not a copy. Everything else has to be written out through
@@ -219,15 +221,15 @@ export async function resolveAsset(
   // the option that asked for it. So the free one stays free even when it is
   // one member of a pair: a Live Photo must not cost a copy of its still as
   // well as its video (docs/PERFORMANCE.md).
-  if (chosen.length === 0) return [await fromLibrary(summary, undefined)];
+  if (chosen.length === 0) return [await fromLibrary(summary, undefined, false, withheld)];
 
   const paired = chosen.length > 1;
   const out: Asset[] = [];
   for (const resource of chosen) {
     if (!needsExport(summary.kind, flags, resource)) {
-      out.push(await fromLibrary(summary, resource, paired));
+      out.push(await fromLibrary(summary, resource, paired, withheld));
     } else {
-      out.push(await exportResource(summary, resource, paired));
+      out.push(await exportResource(summary, resource, paired, withheld));
     }
   }
   return out;
@@ -237,7 +239,7 @@ export async function resolveAsset(
 async function choose(
   summary: AssetSummary,
   options: SendOptions,
-): Promise<{ chosen: Chosen[]; flags: AssetFlags }> {
+): Promise<{ chosen: Chosen[]; flags: AssetFlags; withheld?: ResourceType[] }> {
   try {
     const resources = await GedaTransfer.assetResources(summary.id);
     // Whether the asset has edits is knowable only from its resources, and
@@ -246,10 +248,17 @@ async function choose(
       ...summary.flags,
       hasAdjustments: resources.some((resource) => resource.type === 'adjustmentData'),
     };
-    return { chosen: chooseResources(resources, flags, options, summary.kind), flags };
+    const chosen = chooseResources(resources, flags, options, summary.kind);
+    // `withheldResources` answers undefined when it cannot establish what the
+    // asset holds, which is what stops the asset from being deleted.
+    return { chosen, flags, withheld: withheldResources(resources, chosen) };
   } catch {
     // No resource list means no choice to make: send the asset as the library
     // presents it, which is what every version before P8 did.
+    //
+    // `withheld` stays undefined, and that is the point: this branch does not
+    // know what the asset holds, so nothing resolved through it may ever be
+    // deleted from the phone (src/core/deletion.ts).
     return { chosen: [], flags: summary.flags };
   }
 }
@@ -280,6 +289,7 @@ async function fromLibrary(
   summary: AssetSummary,
   chosen: Chosen | undefined,
   paired = false,
+  withheld?: ResourceType[],
 ): Promise<Asset> {
   const uri = await new MediaAsset(summary.id).getUri();
   const size = new File(uri).size;
@@ -301,6 +311,7 @@ async function fromLibrary(
     pairId: paired ? summary.id : undefined,
     pairRole: paired ? chosen?.role : undefined,
     resourceType: chosen?.type,
+    withheld,
   };
 }
 
@@ -308,6 +319,7 @@ async function exportResource(
   summary: AssetSummary,
   chosen: Chosen,
   paired: boolean,
+  withheld?: ResourceType[],
 ): Promise<Asset> {
   const directory = exportDirectory();
   // The asset id and the resource type together: two resources of one asset
@@ -326,6 +338,7 @@ async function exportResource(
     pairId: paired ? summary.id : undefined,
     pairRole: paired ? chosen.role : undefined,
     resourceType: chosen.type,
+    withheld,
     staged: true,
   };
 }
