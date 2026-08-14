@@ -24,6 +24,7 @@ import { db } from './db';
 
 const SAVE_MEDIA_TO_FILES = 'inbox.saveMediaToFiles';
 const SEND_OPTIONS = 'send.options';
+const DELETE_AFTER_TRANSFER = 'send.deleteAfterTransfer';
 
 export async function loadInboxSettings(): Promise<InboxSettings> {
   try {
@@ -68,6 +69,34 @@ export async function loadSendOptions(): Promise<SendOptions> {
 
 export async function setSendOptions(options: SendOptions): Promise<void> {
   await put(SEND_OPTIONS, JSON.stringify(options));
+}
+
+/**
+ * Whether to delete an asset from this phone once the computer has proved it
+ * holds it (docs/PLAN.md P9).
+ *
+ * Off, and it reads as off in every case that is not an explicit, stored
+ * "1" -- an unreadable preference, a half-written value, a database from a
+ * newer version. Everything else in this file falls back to a default that
+ * costs bandwidth when it is wrong. This one falls back to the only default
+ * that cannot cost a photograph.
+ */
+export async function loadDeleteAfterTransfer(): Promise<boolean> {
+  try {
+    const row = await (
+      await db()
+    ).getFirstAsync<{ value: string }>(
+      'SELECT value FROM settings WHERE key = ?',
+      DELETE_AFTER_TRANSFER,
+    );
+    return row?.value === '1';
+  } catch {
+    return false;
+  }
+}
+
+export async function setDeleteAfterTransfer(value: boolean): Promise<void> {
+  await put(DELETE_AFTER_TRANSFER, value ? '1' : '0');
 }
 
 /** Takes only the fields it recognises, at values it recognises. */

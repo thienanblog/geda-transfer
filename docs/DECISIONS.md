@@ -746,3 +746,92 @@ own key so that sending a Live Photo does not record the still and then treat
 the motion as already sent; the primary deliberately keeps the key it has
 always had, so that upgrading does not make every phone re-send its entire
 library for files the receiver already holds.
+
+## 2026-08-14 — A deletion is authorised by a fresh read, not by a ledger row
+Delete-after-transfer is the only irreversible thing this product does to
+somebody's own library, and it is authorised by exactly one thing: the
+receiver reading the file off its disk and reproducing a digest the phone
+computed independently (`POST /v1/confirm`, docs/PROTOCOL.md §5.4).
+
+The cheap answers were all rejected, and it is worth recording why, because
+every one of them is the obvious thing to reach for later:
+
+**`files.hash` is not proof.** It records what arrived. A file that was moved,
+deleted, truncated, or silently corrupted afterwards leaves that column
+exactly as it was, and the row goes on saying "I have this file" about
+something the machine can no longer produce.
+
+**The upload response is not proof.** It was true when it was sent. A phone
+may act on it a week later, after a conversion, a disk failure, or a user
+tidying their photos folder.
+
+**The dedup probe of §4 is not proof.** Size, capture date and a head hash is
+the right trade for skipping an upload. It is nowhere near enough to destroy
+the other copy, and folding the two questions together would let a future
+change quietly widen the cheap answer into the expensive one. Two questions
+with different consequences get two endpoints.
+
+The cost is a full re-read of every file being confirmed. That is the honest
+price of the only destructive operation here, it is paid only by users who
+turned the feature on, and it is paid once per file ever. Nothing is cached:
+asking twice reads twice, because the question is about the present.
+
+## 2026-08-14 — The phone hashes with SHA-256, again
+`/v1/confirm` is the second place a phone computes a digest, and it uses
+SHA-256 for the same reason the outbox does: CryptoKit runs it on the CPU's
+crypto instructions, and a BLAKE3 implementation in Swift would be a second
+hash to get right in the one code path that cannot afford to be wrong.
+
+This is not a weakening of the BLAKE3 rule. BLAKE3 is still the authority
+everywhere the receiver hashes, and the upload path is unchanged. What
+changed is that the *comparison* is now end-to-end — two machines hashing
+their own bytes and comparing — rather than one machine reporting what it
+remembered. That is a stronger property than the upload path had, and it is
+the property a deletion needs.
+
+## 2026-08-14 — An asset is not a file, and that is a data-loss bug waiting
+One `PHAsset` is often several files: a Live Photo is a still and a video, a
+ProRAW shot is a negative and a JPEG, an edited photo is the capture and the
+render. iOS deletes by asset. So a phone that confirmed one file and deleted
+its asset would destroy the others — and the others may never have been sent.
+
+Two rules follow, and neither is optional:
+
+**Every file an asset was sent as must be confirmed before the asset goes.**
+Confirming the still and deleting the Live Photo loses the motion, and there
+is no way back.
+
+**An asset any part of which was withheld is never deletable**, however firmly
+the receiver vouches for the part it got. This is what `withheldResources`
+computes and what `Asset.withheld` carries. It has a consequence worth stating
+plainly: under the default send options an edited photo sends only the render,
+so edited photos are not deletable until the user chooses "Both". That is the
+correct outcome. The alternative is deleting somebody's untouched captures to
+save them a settings change.
+
+`withheld` is `undefined` when the resolver could not establish what an asset
+holds — an asset resolved through the pre-P8 fallback path, or a ledger row
+that would not parse. Undefined blocks deletion exactly as a non-empty list
+does. An unknown is not a no.
+
+## 2026-08-14 — Everything about deletion fails towards keeping the file
+The rest of this codebase fails towards spending bandwidth: a wrong dedup
+answer re-sends a file, a lost ledger row re-sends a library, a failed
+conversion leaves the original. `src/core/deletion.ts` is written the other
+way round, because its failure mode is a photograph that no longer exists
+anywhere.
+
+So: a missing answer keeps the file. An answer about a different file keeps it.
+A response that will not parse keeps it. `confirmed: "true"` as a string keeps
+it — only the boolean `true` is this receiver saying yes. A candidate with no
+digest or no path keeps it, because a question with a hole in it authorises
+nothing however cheerfully it was answered. A receiver that answers twice, once
+refusing and once confirming, keeps it.
+
+The setting is checked twice on purpose: once by the caller, and again inside
+the function that does the deleting. The second check is the one that matters,
+because it is the one that cannot be skipped by a future caller.
+
+The backstop is that nothing here deletes past the OS trash. Every outcome of
+every bug in this file is recoverable for thirty days by a user who notices —
+which is a backstop, not a plan.

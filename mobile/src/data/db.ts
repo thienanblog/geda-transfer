@@ -58,6 +58,33 @@ const SCHEMA = `
     PRIMARY KEY (receiver_id, item_id)
   );
 
+  -- Files that were sent and may, once the receiver proves it still holds
+  -- them, be deleted from this phone (docs/PLAN.md P9).
+  --
+  -- A row is written only when delete-after-transfer is on, and only after an
+  -- upload the receiver accepted. It is not permission to delete anything: it
+  -- records the digest this phone computed over the bytes it sent, so that the
+  -- receiver can be asked to reproduce it later. Nothing is deleted until it
+  -- does (docs/PROTOCOL.md 5.4).
+  --
+  -- Keyed as the sent table is, per resource rather than per asset: a Live
+  -- Photo is two files and both have to be vouched for before the asset goes.
+  CREATE TABLE IF NOT EXISTS pending_deletion (
+    receiver_id TEXT NOT NULL,
+    asset_key   TEXT NOT NULL,
+    asset_id    TEXT NOT NULL,
+    filename    TEXT NOT NULL,
+    stored_path TEXT NOT NULL,
+    size        INTEGER NOT NULL,
+    sha256      TEXT NOT NULL,
+    -- JSON array of the asset's photographic resources that were NOT sent.
+    -- NULL means the question was never answered, which blocks deletion just
+    -- as a non-empty list does: an unknown is not a no.
+    withheld    TEXT,
+    recorded_at INTEGER NOT NULL,
+    PRIMARY KEY (receiver_id, asset_key)
+  );
+
   -- User preferences. Values are strings; typing lives in TypeScript.
   CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,

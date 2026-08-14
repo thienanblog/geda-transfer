@@ -115,7 +115,26 @@ vi.mock('../../data/ledger', () => ({
   async recordSent(_receiverId: string, asset: Asset, storedPath: string) {
     ledger.sent.set(`${asset.id}:${asset.size}`, storedPath);
   },
+  async sentPaths() {
+    return new Map(ledger.sent);
+  },
   async forgetReceiverHistory() {},
+}));
+
+/** What the uploader handed to delete-after-transfer, by stored path. */
+const noted: { assetId: string; storedPath: string }[] = [];
+
+// Mocked at the boundary rather than left real: the deletion engine reaches
+// expo-media-library, and what this file is testing is only whether the
+// uploader offers it anything. Whether the offer becomes a deletion is
+// src/engine/__tests__/deletion.test.ts.
+vi.mock('../deletion', () => ({
+  async noteSent(_receiver: unknown, asset: Asset, storedPath: string) {
+    noted.push({ assetId: asset.id, storedPath });
+  },
+  async alreadyNoted() {
+    return new Set<string>();
+  },
 }));
 
 vi.mock('../../media/library', () => ({
@@ -186,10 +205,46 @@ beforeEach(() => {
   native.dedup.clear();
   native.cancelHooks.clear();
   ledger.sent.clear();
+  noted.length = 0;
   for (const key of Object.keys(sizes)) delete sizes[key];
 });
 
 describe('Transfer', () => {
+  // Delete-after-transfer is off unless the user turned it on, so the engine
+  // must not even record a candidate by default.
+  it('offers nothing for deletion unless asked to', async () => {
+    const { Transfer } = await import('../uploader');
+    const transfer = new Transfer({ receiver, onChange: () => {} });
+
+    await transfer.run(summaries(3));
+
+    expect(noted).toEqual([]);
+  });
+
+  it('records what it sent when delete-after-transfer is on', async () => {
+    const { Transfer } = await import('../uploader');
+    const transfer = new Transfer({ receiver, deleteAfterTransfer: true, onChange: () => {} });
+
+    await transfer.run(summaries(3));
+
+    expect(noted).toHaveLength(3);
+    expect(noted[0].storedPath).toMatch(/^2026\//);
+  });
+
+  // An asset that went on an earlier run is still on the phone, and the user
+  // who has just turned the setting on means it too.
+  it('records assets this receiver already had', async () => {
+    ledger.sent.set('asset-0:1000000', '2026/IMG_0.heic');
+
+    const { Transfer } = await import('../uploader');
+    const transfer = new Transfer({ receiver, deleteAfterTransfer: true, onChange: () => {} });
+
+    const result = await transfer.run(summaries(2));
+
+    expect(result.alreadyThere).toBe(1);
+    expect(noted.map((entry) => entry.assetId).sort()).toEqual(['asset-0', 'asset-1']);
+  });
+
   it('sends everything and records what landed', async () => {
     const { Transfer } = await import('../uploader');
     const transfer = new Transfer({ receiver, onChange: () => {} });
