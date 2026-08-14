@@ -99,6 +99,17 @@ instructions.
   local-network permission copy, screenshots.
 - Public repo, README, CONTRIBUTING with DCO.
 
+**Gate:** every answer the App Store asks for is written down and matches the
+app — purpose strings, background modes, privacy manifest, and the dossier that
+quotes them — and the repository is one a stranger can use, report to, and
+contribute to.
+
+Verified by `scripts/verify-p10.sh`, which checks the submission against the
+*resolved* Expo configuration rather than against itself. The screenshots are
+pictures of a built app on a real screen: `scripts/screenshots.sh` captures
+them, the script reports which are missing, and `--strict` refuses to call the
+phase done until they exist.
+
 ---
 
 ## After v1

@@ -1,0 +1,39 @@
+name: Feature request
+description: Something the app should do and does not
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please check [AGENTS.md](https://github.com/thienanblog/geda-transfer/blob/main/AGENTS.md)
+        first. Several things that look like obvious missing features are
+        deliberate: two-way sync, delete propagation, a cloud relay, and a
+        "trust this certificate anyway" button are all decided against, with
+        reasons. Arguing with a reason is welcome; not knowing it is there
+        wastes your time and ours.
+
+        What is already planned is in
+        [docs/PLAN.md](https://github.com/thienanblog/geda-transfer/blob/main/docs/PLAN.md).
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The situation, not the solution. What are you doing when you want this?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What should the app do
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you do instead today
+      description: Including "nothing, I gave up", which is useful to know.
+    validations:
+      required: false

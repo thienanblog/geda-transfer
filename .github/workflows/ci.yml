@@ -360,6 +360,95 @@ jobs:
       - run: ./scripts/verify-p8.sh
 
 
+  gate-p10:
+    name: phase gate P10
+    # Ubuntu: P10's gate is about what the app *declares* and what the
+    # repository offers, both of which are text. The binary those declarations
+    # end up in is built by EAS, and the native sources are typechecked in the
+    # `mobile` job on macOS.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: core/go.mod
+          cache-dependency-path: core/go.sum
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      - name: install
+        working-directory: mobile
+        run: npm ci
+
+      # The submission answers checked against the configuration they describe:
+      # purpose strings, background modes, the privacy manifest, the dossier
+      # that quotes them, and the repository a stranger arrives at. Not
+      # `--strict`: the screenshots are pictures of a built app on a real
+      # screen and are reported rather than invented.
+      - run: ./scripts/verify-p10.sh
+
+  dco:
+    name: DCO sign-off
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      # Contributions are accepted under the Developer Certificate of Origin
+      # (CONTRIBUTING.md). It is certified by a sign-off line and by nothing
+      # else, so an unsigned commit is a patch we have no statement of
+      # provenance for.
+      - name: every commit carries a sign-off
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          missing=0
+
+          # Collected before the loop, and checked: a command substitution
+          # that fails inside a `for` list is not fatal, so a rev-list that
+          # errored would leave an empty list and pass this job vacuously.
+          if ! commits=$(git rev-list --no-merges "$BASE".."$HEAD"); then
+            echo "::error::could not list the commits between $BASE and $HEAD"
+            exit 1
+          fi
+          if [ -z "$commits" ]; then
+            echo "No non-merge commits to check."
+            exit 0
+          fi
+
+          # Merge commits are excluded: GitHub writes them, and nobody can
+          # sign off on a commit they did not author.
+          for sha in $commits; do
+            author="$(git show -s --format='%an <%ae>' "$sha")"
+            if git show -s --format=%B "$sha" | grep -qi "^Signed-off-by: .\+ <.\+@.\+>"; then
+              continue
+            fi
+            echo "::error::$sha is not signed off ($author)"
+            git show -s --format='  %h %s' "$sha"
+            missing=$((missing + 1))
+          done
+
+          if [ "$missing" -gt 0 ]; then
+            echo
+            echo "$missing commit(s) have no Signed-off-by line."
+            echo
+            echo "Contributions are accepted under the Developer Certificate of"
+            echo "Origin (CONTRIBUTING.md). Sign off with 'git commit -s'; to fix"
+            echo "what is already committed:"
+            echo
+            echo "    git commit --amend -s              # the last commit"
+            echo "    git rebase --signoff origin/main   # a whole branch"
+            exit 1
+          fi
+          echo "Every commit in this pull request is signed off."
+
   licence:
     name: licence headers
     runs-on: ubuntu-latest

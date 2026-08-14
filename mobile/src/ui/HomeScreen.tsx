@@ -25,6 +25,7 @@ import type { Receiver } from '../core/types';
 import GedaTransfer from '../../modules/geda-transfer';
 import { startBackgroundTransfer } from '../engine/background';
 import { checkInbox, type CheckResult } from '../engine/inbox';
+import { ConnectError } from '../engine/session';
 import { forgetReceiver } from '../data/receivers';
 import { cancelReclaim } from '../engine/deletion';
 import {
@@ -38,7 +39,7 @@ import {
 import { checkAccess, listAssets, requestAccess, type AssetSummary } from '../media/library';
 import { BackgroundCard, useBackgroundTransfers } from './BackgroundCard';
 import { InboxCard, useInbox } from './InboxCard';
-import { Button, Card, Choice, Muted, Screen } from './components';
+import { Button, Card, Choice, Muted, Screen, SettingsHint } from './components';
 import { colors, spacing } from './theme';
 
 export type SendRequest = {
@@ -70,8 +71,11 @@ export function HomeScreen({
   const [loading, setLoading] = useState(false);
   const [handingOver, setHandingOver] = useState(false);
   const [handOver, setHandOver] = useState<string>();
+  /** Set when the last failure on either button looked like a blocked network. */
+  const [handOverBlocked, setHandOverBlocked] = useState(false);
   const [checking, setChecking] = useState(false);
   const [checked, setChecked] = useState<string>();
+  const [checkedBlocked, setCheckedBlocked] = useState(false);
   const [saveToFiles, setSaveToFiles] = useState(false);
   const [send, setSend] = useState<SendOptions>(DEFAULT_SEND_OPTIONS);
   const [deleteAfter, setDeleteAfter] = useState(false);
@@ -159,6 +163,7 @@ export function HomeScreen({
     if (!receiver) return;
     setHandingOver(true);
     setHandOver(undefined);
+    setHandOverBlocked(false);
     try {
       const result = await startBackgroundTransfer({
         receiver,
@@ -169,6 +174,7 @@ export function HomeScreen({
       setHandOver(describeHandOver(result, GedaTransfer.liveActivitiesAvailable()));
     } catch (error) {
       setHandOver(error instanceof Error ? error.message : String(error));
+      setHandOverBlocked(error instanceof ConnectError && error.offerSettings);
     } finally {
       setHandingOver(false);
     }
@@ -185,12 +191,14 @@ export function HomeScreen({
     if (!receiver) return;
     setChecking(true);
     setChecked(undefined);
+    setCheckedBlocked(false);
     try {
       const result = await checkInbox(receiver);
       inbox.refresh();
       setChecked(describeCheck(result, receiver.name));
     } catch (error) {
       setChecked(error instanceof Error ? error.message : String(error));
+      setCheckedBlocked(error instanceof ConnectError && error.offerSettings);
     } finally {
       setChecking(false);
     }
@@ -292,6 +300,7 @@ export function HomeScreen({
             onPress={() => void collect()}
           />
           {checked ? <Muted>{checked}</Muted> : null}
+          <SettingsHint shown={checkedBlocked} />
 
           {/*
             Advanced, and off by default: people who have not gone looking for
@@ -460,6 +469,7 @@ export function HomeScreen({
         />
 
         {handOver ? <Muted>{handOver}</Muted> : null}
+        <SettingsHint shown={handOverBlocked} />
 
         {receiver ? (
           <Button

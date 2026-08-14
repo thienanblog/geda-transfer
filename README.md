@@ -3,7 +3,8 @@
 Fast Wi-Fi transfer of photos, videos, and files between your phone and your
 computer or NAS. Local network only — no cloud, no account, no subscription.
 
-**Status:** in development.
+**Status:** in development. v1 is feature-complete and being prepared for the
+App Store; the desktop app and the NAS daemon can be built and run today.
 
 ## Why
 
@@ -87,10 +88,25 @@ development client — Expo Go cannot load the native transfer module. See
 
 Measured speeds live in [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
 
-## Building
+## Privacy
 
-See [AGENTS.md](AGENTS.md) for architecture and [docs/PLAN.md](docs/PLAN.md)
-for the roadmap.
+Nothing is collected. There is no account, no analytics, and no server: your
+files go from your phone to a computer you chose and nowhere else. The whole
+policy is [docs/PRIVACY.md](docs/PRIVACY.md), and it is short.
+
+Trust is a key you pin by scanning a QR code, not a certificate authority. A
+pin mismatch is a hard failure with no override — see
+[SECURITY.md](SECURITY.md) for the threat model and for how to report a
+vulnerability privately.
+
+## Building and contributing
+
+See [AGENTS.md](AGENTS.md) for architecture, [docs/PLAN.md](docs/PLAN.md) for
+the roadmap, and [CONTRIBUTING.md](CONTRIBUTING.md) for how to send a patch —
+including the sign-off that the DCO needs.
+
+What the App Store submission consists of, and why each answer is what it is,
+is in [docs/APPSTORE.md](docs/APPSTORE.md).
 
 ## License
 
@@ -101,4 +117,5 @@ code license; see [TRADEMARK.md](TRADEMARK.md). Forks are welcome under a
 different name.
 
 Contributions are accepted under the Developer Certificate of Origin — sign
-your commits with `git commit -s`.
+your commits with `git commit -s`. See [CONTRIBUTING.md](CONTRIBUTING.md) and
+the [code of conduct](CODE_OF_CONDUCT.md).
