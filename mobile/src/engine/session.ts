@@ -16,13 +16,28 @@
 
 import GedaTransfer from '../../modules/geda-transfer';
 import { baseUrl, isExpired, type PairingPayload } from '../core/pairing';
+import { diagnoseUnreachable, isLocalAddress } from '../core/reachability';
 import type { Receiver } from '../core/types';
-import { rememberAddr } from '../data/receivers';
+import { loadReceivers, rememberAddr } from '../data/receivers';
 import type { SelfIdentity } from '../data/receivers';
 
 const CONNECT_TIMEOUT_MS = 4000;
 
-export class ConnectError extends Error {}
+export class ConnectError extends Error {
+  /**
+   * Whether to offer the user a jump to Settings.
+   *
+   * Set when the failure looks like a declined Local Network permission,
+   * which is the one cause of silence that cannot be found from inside the
+   * app (src/core/reachability.ts).
+   */
+  readonly offerSettings: boolean;
+
+  constructor(message: string, offerSettings = false) {
+    super(message);
+    this.offerSettings = offerSettings;
+  }
+}
 
 /**
  * Finds an address that works, out of everything the receiver advertised.
@@ -37,9 +52,7 @@ export async function connect(receiver: Receiver): Promise<string> {
   const winner = await GedaTransfer.race(candidates, receiver.spki, CONNECT_TIMEOUT_MS);
 
   if (!winner) {
-    throw new ConnectError(
-      `${receiver.name} did not answer on any of its addresses. Check that it is running and on a network this phone can reach.`,
-    );
+    throw await unreachable(receiver.name, candidates);
   }
 
   const addr = winner.replace(/^https:\/\//, '');
@@ -85,9 +98,10 @@ export async function pair(payload: PairingPayload, self: SelfIdentity): Promise
   const candidates = payload.addrs.map(baseUrl);
   const winner = await GedaTransfer.race(candidates, payload.spki, CONNECT_TIMEOUT_MS);
   if (!winner) {
-    throw new ConnectError(
-      `${payload.name} is not reachable from this phone. Both devices need to be on networks that can talk to each other.`,
-    );
+    // The first connection this app ever makes is the one iOS puts the Local
+    // Network prompt in front of, so pairing is where a declined permission
+    // is most likely to be met -- and where it is least likely to be guessed.
+    throw await unreachable(payload.name, candidates);
   }
 
   const response = await GedaTransfer.request({
@@ -126,6 +140,28 @@ export async function pair(payload: PairingPayload, self: SelfIdentity): Promise
     pairedAt: Date.now(),
     lastGoodAddr: winner.replace(/^https:\/\//, ''),
   };
+}
+
+/**
+ * Builds the error for a race nobody won.
+ *
+ * `everReachedLocally` is read from the paired receivers rather than kept as a
+ * flag of its own: an address that answered is recorded there already, and a
+ * local one among them is proof the permission was granted at least once.
+ */
+async function unreachable(name: string, candidates: string[]): Promise<ConnectError> {
+  let everReachedLocally = false;
+  try {
+    everReachedLocally = (await loadReceivers()).some(
+      (entry) => entry.lastGoodAddr !== undefined && isLocalAddress(entry.lastGoodAddr),
+    );
+  } catch {
+    // Unreadable storage is not worth a second failure on top of the first;
+    // the diagnosis is only ever a hint.
+  }
+
+  const diagnosis = diagnoseUnreachable(name, { candidates, everReachedLocally });
+  return new ConnectError(diagnosis.message, diagnosis.offerSettings);
 }
 
 function describe(body: string, status: number): string {

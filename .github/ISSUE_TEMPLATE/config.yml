@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/thienanblog/geda-transfer/security/advisories/new
+    about: Report privately. Please do not open a public issue for a vulnerability.
+  - name: Architecture and settled decisions
+    url: https://github.com/thienanblog/geda-transfer/blob/main/AGENTS.md
+    about: Why the app works the way it does, before proposing that it should not.

@@ -18,11 +18,12 @@ import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 
 import { formatBytes, formatDuration, formatRate } from '../core/throughput';
 import type { TransferItem } from '../core/types';
+import { ConnectError } from '../engine/session';
 import { Transfer, type TransferSnapshot } from '../engine/uploader';
 import { describeKept } from '../core/deletion';
 import { reclaim, type ReclaimOutcome } from '../engine/deletion';
 import type { SendRequest } from './HomeScreen';
-import { Button, Card, Muted, ProgressBar, Screen, Stat } from './components';
+import { Button, Card, Muted, ProgressBar, Screen, SettingsHint, Stat } from './components';
 import { colors, spacing } from './theme';
 
 const KEEP_AWAKE_TAG = 'geda-transfer';
@@ -36,6 +37,8 @@ export function TransferScreen({
 }) {
   const [snapshot, setSnapshot] = useState<TransferSnapshot>();
   const [fatal, setFatal] = useState<string>();
+  /** Whether the failure above looked like a declined Local Network permission. */
+  const [blocked, setBlocked] = useState(false);
   const [reclaimed, setReclaimed] = useState<ReclaimOutcome>();
   const transfer = useRef<Transfer>(undefined);
 
@@ -77,9 +80,10 @@ export function TransferScreen({
           });
         }
       })
-      .catch((error: unknown) =>
-        setFatal(error instanceof Error ? error.message : String(error)),
-      )
+      .catch((error: unknown) => {
+        setFatal(error instanceof Error ? error.message : String(error));
+        setBlocked(error instanceof ConnectError && error.offerSettings);
+      })
       .finally(() => {
         if (request.keepAwake) deactivateKeepAwake(KEEP_AWAKE_TAG);
       });
@@ -132,6 +136,7 @@ export function TransferScreen({
       {fatal ? (
         <Card>
           <Text style={styles.error}>{fatal}</Text>
+          <SettingsHint shown={blocked} />
         </Card>
       ) : null}
 

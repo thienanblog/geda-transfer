@@ -1,0 +1,70 @@
+name: Bug report
+description: Something does not work the way it should
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Two devices are involved in almost every bug here, and the network
+        between them is usually the answer. The questions below are the ones we
+        would otherwise have to ask you.
+
+        **If this involves data loss — a photo that is gone — say so in the
+        first line of the summary. Those are looked at first.**
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened
+      description: What you did, what happened, and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. …
+        2. …
+    validations:
+      required: true
+
+  - type: input
+    id: phone
+    attributes:
+      label: Phone
+      placeholder: iPhone 15 Pro, iOS 26.1, app 1.0.0 (build 12)
+    validations:
+      required: false
+
+  - type: input
+    id: receiver
+    attributes:
+      label: Receiver
+      description: The desktop app, `gedad`, or the Docker image — and its version.
+      placeholder: gedad 1.0.0, Docker, Synology DS920+
+    validations:
+      required: false
+
+  - type: dropdown
+    id: topology
+    attributes:
+      label: How are the two connected?
+      description: Discovery bugs are nearly always topology, and topology is what we cannot guess.
+      options:
+        - Same Wi-Fi, same subnet
+        - Different subnets, routed
+        - Over a VPN (WireGuard, Tailscale, …)
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Anything the receiver printed
+      description: Its log around the time it went wrong. Redact hostnames if you would rather.
+      render: text
+    validations:
+      required: false

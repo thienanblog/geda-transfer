@@ -835,3 +835,65 @@ because it is the one that cannot be skipped by a future caller.
 The backstop is that nothing here deletes past the OS trash. Every outcome of
 every bug in this file is recoverable for thirty days by a user who notices —
 which is a backstop, not a plan.
+
+## 2026-08-14 — The submission is checked against the app, not against itself
+Everything P10 produces is a claim about the app made somewhere the app cannot
+contradict: a purpose string in App Store Connect, a background mode in a
+review note, a permission described in a privacy policy. Those claims are true
+on the day they are written and silently rot afterwards, and the failure shows
+up as a rejection email a week after a release rather than as a red test.
+
+So `scripts/verify-p10.sh` reads the *resolved* Expo configuration — the
+Info.plist and privacy manifest prebuild would actually write, plugins and all
+— and checks the dossier against that. `docs/APPSTORE.md` quotes the purpose
+strings, so a string changed in `app.json` and not in the dossier fails the
+gate. It is the same rule as `docs/PROTOCOL.md` being normative for the wire:
+if two places state a fact, one of them is authority and the other is checked.
+
+## 2026-08-14 — Two purpose strings deleted rather than written
+Expo's plugins add `NSFaceIDUsageDescription` and `NSMicrophoneUsageDescription`
+by default, both with template text. This app uses neither Face ID nor the
+microphone. The temptation is to write a plausible sentence for each and move
+on; the correct action is to pass `false` to the plugin so the key is not
+emitted at all.
+
+A purpose string is a promise about what the app does with a capability.
+Shipping one for a capability the app never touches is a 5.1.1 rejection at
+best, and at worst it is true — an app that asks for the microphone eventually
+gets it. The gate now asserts the exact set of purpose strings, so a future
+dependency that adds a third one fails rather than shipping.
+
+## 2026-08-14 — The Local Network permission is diagnosed by symptom, not asked
+iOS 14 gates every connection to a local-subnet address behind the Local
+Network permission, there is no API that reports its state, and the prompt is
+shown exactly once. An app whose user tapped "Don't Allow" therefore finds
+nothing, forever, and can neither detect that nor ask again.
+
+The app cannot ask, so it recognises the shape: every address tried was local,
+and this app has never once reached a local address — which it can tell, because
+an address that answered is recorded against the receiver it answered for. Both
+true, and the Local Network permission is named and Settings is one tap away.
+
+Two things are deliberate. The message is phrased as the likeliest cause rather
+than a verdict, because a receiver that is switched off produces identical
+silence. And the mesh-VPN ranges — Tailscale's `100.64.0.0/10` and
+`fd7a:115c:a1e0::/48` — do not count as local, because a connection through a
+tunnel is exempt from the prompt; counting them would send somebody to Settings
+to fix a tunnel that is merely down.
+
+## 2026-08-14 — Screenshots are captured, never composed
+Half the App Store screenshot set is of things that only happen when two
+machines are talking: a transfer at speed, a Live Activity counting down, files
+arriving from a computer. It would be easy to compose those in a design tool,
+and the result would be indistinguishable from a real one to everybody except
+the person who installs the app.
+
+`scripts/screenshots.sh` therefore drives a real simulator with a real build
+and refuses to produce anything else: it will not run without an iOS runtime,
+it will not run without the app installed, and it deletes any capture that
+comes out at a size the store would not accept rather than rescaling it. The
+gate reports the missing frames instead of passing, on the same principle as
+the device measurements in `docs/PERFORMANCE.md`: an uncaptured screenshot is
+not a captured one, and the honest state of a phase is more useful than a green
+tick.
+

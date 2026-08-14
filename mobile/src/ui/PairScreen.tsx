@@ -19,8 +19,8 @@ import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { decodePairingPayload } from '../core/pairing';
 import type { Receiver } from '../core/types';
 import { loadIdentity, saveReceiver } from '../data/receivers';
-import { pair } from '../engine/session';
-import { Button, Card, Muted, Screen } from './components';
+import { ConnectError, pair } from '../engine/session';
+import { Button, Card, Muted, Screen, SettingsHint } from './components';
 import { colors, spacing } from './theme';
 
 export function PairScreen({
@@ -33,6 +33,8 @@ export function PairScreen({
   const [permission, requestPermission] = useCameraPermissions();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  /** Whether that error looked like a declined Local Network permission. */
+  const [blocked, setBlocked] = useState(false);
 
   async function onScanned(data: string) {
     // The camera keeps firing while the code is in frame; without this the
@@ -41,6 +43,7 @@ export function PairScreen({
     if (busy) return;
     setBusy(true);
     setError(undefined);
+    setBlocked(false);
 
     try {
       const payload = decodePairingPayload(data);
@@ -49,6 +52,7 @@ export function PairScreen({
       onPaired(receiver);
     } catch (thrown) {
       setError(thrown instanceof Error ? thrown.message : String(thrown));
+      setBlocked(thrown instanceof ConnectError && thrown.offerSettings);
       setBusy(false);
     }
   }
@@ -94,6 +98,7 @@ export function PairScreen({
 
       <Card>
         {error ? <Text style={styles.error}>{error}</Text> : null}
+        <SettingsHint shown={blocked} />
         <Muted>
           On the receiver run `gedad pair`, or open the pairing screen in the desktop app. The code
           is single-use and expires after a few minutes.

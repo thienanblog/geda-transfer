@@ -265,3 +265,109 @@ A table with only successes in it is not evidence. Record the run where ffmpeg
 was missing, where the phone had a burst of forty frames in it, where a ProRAW
 shot had been edited, and where the destination already held a file with the
 name a conversion wanted — those are the paths this phase actually fails on.
+
+---
+
+## P9 gate — delete after transfer
+
+**The gate (docs/PLAN.md):** deliberate failure injection never deletes an
+unverified file.
+
+`scripts/verify-p9.sh` proves that on both sides without a phone: the receiver
+is asked to vouch for files that have been deleted, truncated, appended to,
+altered at the same length, and asked about by the wrong device, and the
+phone's rules are run against a refusal, a silence, a reply that is not JSON, a
+reply about a different file, a half-confirmed Live Photo, and an asset only
+part of which was ever sent. Nothing is deletable in any of them.
+
+What a script cannot do is watch iOS delete something. Two properties of the
+system dialog are the whole user-facing contract of this phase, and both need a
+real library:
+
+- **One prompt for the batch.** iOS shows a confirmation for every deletion
+  request. A run that asks per file turns a backup of two hundred photos into
+  two hundred taps, which is not a feature anybody would use twice.
+- **Recently Deleted.** What the app removes must be recoverable for thirty
+  days. This is the backstop behind every rule in `src/core/deletion.ts`, and
+  an app that hard-deleted instead would pass every test in the suite.
+
+### How to run it
+
+1. Build onto a phone with a library you are willing to delete from — or a
+   fresh iCloud-free device with photos taken for the purpose:
+   ```bash
+   cd mobile && npx eas build --profile development --platform ios
+   ```
+2. Turn **Delete after transfer** on in Advanced. Note whether the warning was
+   clear enough that you would have known what you were agreeing to.
+3. Send a batch of at least twenty assets, including **one Live Photo** and
+   **one edited photo**. Count the prompts: it must be one.
+4. Check the receiver holds them, then open Photos › Recently Deleted and
+   confirm the count matches what the app said it deleted.
+5. Now the injected failure, which is the gate itself: stop the receiver
+   mid-batch, or delete a file out of the destination folder before the app
+   asks about it, and send again. **Nothing may be deleted from the phone.**
+   Record what the app said instead.
+6. Confirm the edited photo was *kept* under the default send options. It is
+   sent as the render only, so its original was withheld and the asset is not
+   deletable — that is correct behaviour, and the one most likely to be
+   mistaken for a bug.
+
+### Results
+
+| Date | Device | iOS | Receiver | Assets | Prompts | Deleted | In Recently Deleted | Injected failure | Deleted after injection | Notes |
+|---|---|---|---|---|---|---|---|---|---|---|
+| _no run recorded yet_ | | | | | | | | | | |
+
+The row that matters is the last two columns: an injected failure, and a zero
+beside it.
+
+---
+
+## P10 gate — ship
+
+**The gate (docs/PLAN.md):** every answer the App Store asks for is written
+down and matches the app; the repository is one a stranger can use, report to,
+and contribute to.
+
+`scripts/verify-p10.sh` checks everything in that sentence that is text:
+purpose strings against the resolved Info.plist, the background modes against
+the identifier the native code registers, the privacy manifest against what
+first-party code actually calls, the dossier in `docs/APPSTORE.md` against all
+of it, and the repository's licence, DCO, security policy, and links.
+
+What is left is what a machine cannot produce: pictures of the app running, and
+a submission.
+
+- **Screenshots.** Six frames on a 6.9-inch iPhone and a 13-inch iPad, listed
+  in `docs/APPSTORE.md` §8. `scripts/screenshots.sh` captures them at the right
+  sizes, but the app has to be built and running and a receiver has to be on
+  the network — half the frames are of files actually moving.
+- **The receiver a reviewer can run.** A notarised macOS build behind a URL
+  that resolves from outside your network, and a demo video of the two-device
+  flow. Without them the reviewer cannot exercise the app at all, which is the
+  likeliest rejection this submission faces.
+- **The submission.** What was uploaded, what came back, and how long it took.
+
+### How to run it
+
+1. `./scripts/verify-p10.sh --strict` — it fails until the screenshots exist.
+2. Build and install onto a simulator, start a receiver, and capture:
+   ```bash
+   cd mobile && npx expo run:ios --configuration Release
+   cd cli && go run .
+   ./scripts/screenshots.sh
+   ```
+3. Record the demo video on real hardware: pairing, a transfer, a force-quit
+   that keeps going, and a file arriving on the computer.
+4. Notarise the receiver build and check the link from a phone on cellular.
+5. `eas build --profile production --platform ios`, then
+   `eas submit --profile production --platform ios`.
+6. Record the outcome below, including a rejection. A rejection and its reason
+   is the most useful row this table can hold.
+
+### Results
+
+| Date | App version | Build | Screenshots captured | Demo video | Receiver build linked | Submitted | Outcome | Days to outcome | Notes |
+|---|---|---|---|---|---|---|---|---|---|
+| _no run recorded yet_ | | | | | | | | | |

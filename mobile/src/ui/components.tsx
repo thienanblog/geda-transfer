@@ -13,7 +13,7 @@
 // limitations under the License.
 
 import type { ReactNode } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { colors, spacing } from './theme';
 
@@ -58,6 +58,19 @@ export function Button({
       <Text style={[styles.buttonLabel, tone === 'quiet' && { color: colors.text }]}>{label}</Text>
     </Pressable>
   );
+}
+
+/**
+ * The way out of a declined Local Network permission.
+ *
+ * There is no API to ask for that permission a second time: iOS shows the
+ * prompt once and thereafter the only switch is in Settings. So the app cannot
+ * re-ask, and a user who tapped "Don't Allow" has an app that silently finds
+ * nothing forever unless something takes them there.
+ */
+export function SettingsHint({ shown }: { shown: boolean }) {
+  if (!shown) return null;
+  return <Button label="Open Settings" tone="quiet" onPress={() => void Linking.openSettings()} />;
 }
 
 export function ProgressBar({ fraction }: { fraction: number }) {
